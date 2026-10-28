@@ -6,8 +6,9 @@ export type ClueBase = {
 
 export type Clue =
   | (ClueBase & { mode?: undefined })
-  | (ClueBase & { mode: 'frames'; acceptedAnswers: string[]; frames: string[] })
+  | (ClueBase & { mode: 'frames'; frames: string[] })
   | (ClueBase & { mode: 'zoom'; acceptedAnswers: string[]; image: string })
+  | (ClueBase & { mode: 'audio'; audio: string })
 
 export type Category = {
   id: string
@@ -24,13 +25,12 @@ export type GameConfig = {
 export const CONFIG_STORAGE_KEY = 'halloween-jeopardy:config:v1'
 const FRAME_COUNT = 5
 
-function createFrameClue(value: number, answer: string, slug: string, acceptedAnswers: string[]): Extract<Clue, { mode: 'frames' }> {
+function createFrameClue(value: number, answer: string, slug: string): Extract<Clue, { mode: 'frames' }> {
   return {
     mode: 'frames',
     value,
     prompt: 'Name the movie from its frames.',
     answer,
-    acceptedAnswers,
     frames: Array.from({ length: FRAME_COUNT }, (_, index) => `/mini-games/movies/${slug}/frame-${index + 1}.webp`),
   }
 }
@@ -101,11 +101,13 @@ const defaultCategories: Category[] = [
     name: 'Guess by Frame',
     icon: '🎞️',
     clues: [
-      createFrameClue(100, 'Night of the Living Dead', 'night-of-the-living-dead', ['Night of the Living Dead (1968)', 'Night of the Living Dead 1968', 'NOTLD']),
-      createFrameClue(200, 'Nosferatu', 'nosferatu', ['Nosferatu (1922)', 'Nosferatu: A Symphony of Horror', 'Nosferatu, eine Symphonie des Grauens', 'A Symphony of Horror']),
-      createFrameClue(300, 'The Golem', 'the-golem', ['The Golem (1920)', 'The Golem: How He Came into the World', 'Der Golem, wie er in die Welt kam']),
-      createFrameClue(400, 'The Screaming Skull', 'the-screaming-skull', ['The Screaming Skull (1958)', 'Screaming Skull']),
-      createFrameClue(500, 'The Hideous Sun Demon', 'the-hideous-sun-demon', ['The Hideous Sun Demon (1958)']),
+      createFrameClue(100, 'Night of the Living Dead', 'night-of-the-living-dead'),
+      createFrameClue(200, 'Nosferatu', 'nosferatu'),
+      createFrameClue(300, 'The Golem', 'the-golem'),
+      createFrameClue(400, 'The Screaming Skull', 'the-screaming-skull'),
+      createFrameClue(500, 'The Hideous Sun Demon', 'the-hideous-sun-demon'),
+      createFrameClue(600, 'Annabelle', 'annabelle'),
+      createFrameClue(700, 'IT Chapter Two', 'it-chapter-two'),
     ],
   },
   {
@@ -136,14 +138,15 @@ function requireStringList(value: unknown, field: string, maxItemLength: number)
   return value.map((item) => item.trim())
 }
 
-const MAX_MEDIA_REFERENCE_LENGTH = 8_000_000
+const MAX_MEDIA_REFERENCE_LENGTH = 16_000_000
 
 function requireMediaReference(value: unknown, field: string): string {
   const reference = requireText(value, field, MAX_MEDIA_REFERENCE_LENGTH)
   if (reference.startsWith('/') && !reference.startsWith('//')) return reference
   if (/^asset:\/\/[a-z0-9-]{16,80}$/i.test(reference)) return reference
   if (/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(reference)) return reference
-  throw new Error(`${field} must be a local image path, an uploaded image, or embedded PNG, JPEG, or WebP data.`)
+  if (/^data:audio\/(?:mpeg|mp3|wav|x-wav|ogg);base64,[A-Za-z0-9+/]+={0,2}$/.test(reference)) return reference
+  throw new Error(`${field} must be a local media path, an uploaded asset, or embedded image or audio data.`)
 }
 
 function requireMediaReferenceList(value: unknown, field: string): string[] {
@@ -152,7 +155,7 @@ function requireMediaReferenceList(value: unknown, field: string): string[] {
 }
 
 function copyClue(clue: Clue): Clue {
-  if (clue.mode === 'frames') return { ...clue, acceptedAnswers: [...clue.acceptedAnswers], frames: [...clue.frames] }
+  if (clue.mode === 'frames') return { ...clue, frames: [...clue.frames] }
   if (clue.mode === 'zoom') return { ...clue, acceptedAnswers: [...clue.acceptedAnswers] }
   return { ...clue }
 }
@@ -209,6 +212,7 @@ export function parseGameConfig(value: unknown): GameConfig {
         acceptedAnswers?: unknown
         frames?: unknown
         image?: unknown
+        audio?: unknown
       }
       if (!Number.isSafeInteger(clueData.value) || (clueData.value as number) <= 0) {
         throw new Error(`${clueLabel} needs a positive whole-number point value.`)
@@ -224,15 +228,18 @@ export function parseGameConfig(value: unknown): GameConfig {
       }
       if (clueData.mode === undefined) return base
       if (clueData.mode === 'frames') {
-        const acceptedAnswers = requireStringList(clueData.acceptedAnswers, `${clueLabel} accepted answers`, 200)
         const frames = requireMediaReferenceList(clueData.frames, `${clueLabel} frame paths`)
         if (frames.length !== FRAME_COUNT) throw new Error(`${clueLabel} must have exactly ${FRAME_COUNT} frame paths.`)
-        return { ...base, mode: 'frames', acceptedAnswers, frames }
+        return { ...base, mode: 'frames', frames }
       }
       if (clueData.mode === 'zoom') {
         const acceptedAnswers = requireStringList(clueData.acceptedAnswers, `${clueLabel} accepted answers`, 200)
         const image = requireMediaReference(clueData.image, `${clueLabel} image path`)
         return { ...base, mode: 'zoom', acceptedAnswers, image }
+      }
+      if (clueData.mode === 'audio') {
+        const audio = requireMediaReference(clueData.audio, `${clueLabel} audio path`)
+        return { ...base, mode: 'audio', audio }
       }
       throw new Error(`${clueLabel} has an unknown clue mode.`)
     })

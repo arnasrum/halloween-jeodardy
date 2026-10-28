@@ -30,13 +30,14 @@ database.exec(`
 
 const findMediaById = database.prepare('SELECT * FROM media WHERE id = ?')
 const findMediaByHash = database.prepare('SELECT * FROM media WHERE sha256 = ?')
-const listMedia = database.prepare('SELECT * FROM media ORDER BY created_at DESC, name COLLATE NOCASE ASC')
+const listImages = database.prepare("SELECT * FROM media WHERE mime_type LIKE 'image/%' ORDER BY created_at DESC, name COLLATE NOCASE ASC")
+const listAudio = database.prepare("SELECT * FROM media WHERE mime_type LIKE 'audio/%' ORDER BY created_at DESC, name COLLATE NOCASE ASC")
 const insertMedia = database.prepare(`
   INSERT INTO media (id, name, mime_type, file_name, byte_size, sha256, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?)
 `)
 
-const imageFormats = {
+const mediaFormats = {
   'image/png': {
     extension: 'png',
     matches: (bytes) => bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
@@ -49,7 +50,21 @@ const imageFormats = {
     extension: 'webp',
     matches: (bytes) => bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP',
   },
+  'audio/mpeg': {
+    extension: 'mp3',
+    matches: (bytes) => bytes.length >= 3 && (bytes.toString('ascii', 0, 3) === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)),
+  },
+  'audio/wav': {
+    extension: 'wav',
+    matches: (bytes) => bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WAVE',
+  },
+  'audio/ogg': {
+    extension: 'ogg',
+    matches: (bytes) => bytes.length >= 4 && bytes.toString('ascii', 0, 4) === 'OggS',
+  },
 }
+const mediaMimeAliases = { 'audio/mp3': 'audio/mpeg', 'audio/x-wav': 'audio/wav' }
+const acceptedMediaContentTypes = [...Object.keys(mediaFormats), ...Object.keys(mediaMimeAliases)]
 
 function publicMedia(row) {
   return {
@@ -72,13 +87,18 @@ function displayName(header, extension) {
     .replace(/[\u0000-\u001f\u007f]/g, '')
     .trim()
     .slice(0, 160)
-  return name || `Uploaded image.${extension}`
+  return name || `Uploaded media.${extension}`
 }
 
 const app = express()
 app.disable('x-powered-by')
 app.get('/api/health', (_request, response) => response.json({ status: 'ok' }))
-app.get('/api/media', (_request, response) => response.json(listMedia.all().map(publicMedia)))
+app.get('/api/media', (request, response) => {
+  const type = request.query.type
+  if (type === undefined || type === 'image') return response.json(listImages.all().map(publicMedia))
+  if (type === 'audio') return response.json(listAudio.all().map(publicMedia))
+  return response.status(400).json({ error: 'Media type must be image or audio.' })
+})
 app.get('/api/media/:id', (request, response, next) => {
   const id = request.params.id
   if (!/^[a-f0-9-]{16,80}$/i.test(id)) return response.sendStatus(404)
@@ -92,15 +112,16 @@ app.get('/api/media/:id', (request, response, next) => {
   })
 })
 
-app.post('/api/media', express.raw({ type: Object.keys(imageFormats), limit: '10mb' }), async (request, response, next) => {
+app.post('/api/media', express.raw({ type: acceptedMediaContentTypes, limit: '10mb' }), async (request, response, next) => {
   try {
-    const mimeType = request.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() ?? ''
-    const format = Object.hasOwn(imageFormats, mimeType) ? imageFormats[mimeType] : undefined
+    const suppliedMimeType = request.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+    const mimeType = mediaMimeAliases[suppliedMimeType] ?? suppliedMimeType
+    const format = Object.hasOwn(mediaFormats, mimeType) ? mediaFormats[mimeType] : undefined
     const bytes = request.body
     if (!format || !Buffer.isBuffer(bytes) || bytes.length === 0) {
-      return response.status(415).json({ error: 'Upload a PNG, JPEG, or WebP image.' })
+      return response.status(415).json({ error: 'Upload a PNG, JPEG, WebP, MP3, WAV, or OGG file.' })
     }
-    if (!format.matches(bytes)) return response.status(415).json({ error: 'The uploaded file is not a valid image of the declared type.' })
+    if (!format.matches(bytes)) return response.status(415).json({ error: 'The uploaded file does not match its declared media type.' })
 
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     const existing = findMediaByHash.get(sha256)

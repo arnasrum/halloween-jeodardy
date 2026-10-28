@@ -7,6 +7,14 @@ const ACCEPTED_IMAGE_TYPES: Record<string, true> = {
   'image/jpeg': true,
   'image/webp': true,
 }
+const ACCEPTED_AUDIO_TYPES: Record<string, true> = {
+  'audio/mpeg': true,
+  'audio/mp3': true,
+  'audio/wav': true,
+  'audio/x-wav': true,
+  'audio/ogg': true,
+}
+const MAX_MEDIA_UPLOAD_BYTES = 10 * 1024 * 1024
 
 export type MediaAsset = {
   reference: string
@@ -61,25 +69,36 @@ export function isEmbeddedImageReference(reference: string): boolean {
   return /^data:image\/(?:png|jpeg|webp);base64,/.test(reference)
 }
 
+export function isEmbeddedAudioReference(reference: string): boolean {
+  return /^data:audio\/(?:mpeg|mp3|wav|x-wav|ogg);base64,/.test(reference)
+}
+
 export function mediaAssetUrl(reference: string): string {
   const id = assetId(reference)
   return id ? `${MEDIA_API}/${encodeURIComponent(id)}` : reference
 }
 
-export async function listMediaAssets(): Promise<MediaAsset[]> {
+async function listAssets(type: 'image' | 'audio'): Promise<MediaAsset[]> {
   let response: Response
   try {
-    response = await fetch(MEDIA_API)
+    response = await fetch(`${MEDIA_API}?type=${type}`)
   } catch {
     throw new Error('Could not connect to the media server. Start the app with `npm run dev`.')
   }
-  if (!response.ok) throw await responseError(response, 'Could not load the saved image library.')
+  if (!response.ok) throw await responseError(response, `Could not load the saved ${type} library.`)
   return await response.json() as MediaAsset[]
 }
 
-export async function storeMediaAsset(blob: Blob, name = 'Uploaded image'): Promise<string> {
-  if (!Object.hasOwn(ACCEPTED_IMAGE_TYPES, blob.type.toLowerCase())) throw new Error('Upload a PNG, JPEG, or WebP image.')
-  if (blob.size > 10 * 1024 * 1024) throw new Error('Images must be 10 MB or smaller.')
+export function listMediaAssets(): Promise<MediaAsset[]> {
+  return listAssets('image')
+}
+
+export function listAudioAssets(): Promise<MediaAsset[]> {
+  return listAssets('audio')
+}
+
+async function uploadMediaAsset(blob: Blob, name: string): Promise<string> {
+  if (blob.size > MAX_MEDIA_UPLOAD_BYTES) throw new Error('Media files must be 10 MB or smaller.')
 
   let response: Response
   try {
@@ -94,9 +113,19 @@ export async function storeMediaAsset(blob: Blob, name = 'Uploaded image'): Prom
   } catch {
     throw new Error('Could not connect to the media server. Start the app with `npm run dev`.')
   }
-  if (!response.ok) throw await responseError(response, 'Could not save this image on the server.')
+  if (!response.ok) throw await responseError(response, 'Could not save this media on the server.')
   const asset = await response.json() as MediaAsset
   return asset.reference
+}
+
+export async function storeMediaAsset(blob: Blob, name = 'Uploaded image'): Promise<string> {
+  if (!Object.hasOwn(ACCEPTED_IMAGE_TYPES, blob.type.toLowerCase())) throw new Error('Upload a PNG, JPEG, or WebP image.')
+  return uploadMediaAsset(blob, name)
+}
+
+export async function storeAudioAsset(blob: Blob, name = 'Uploaded sound'): Promise<string> {
+  if (!Object.hasOwn(ACCEPTED_AUDIO_TYPES, blob.type.toLowerCase())) throw new Error('Upload an MP3, WAV, or OGG sound file.')
+  return uploadMediaAsset(blob, name)
 }
 
 async function readLegacyMediaAsset(reference: string): Promise<Blob | null> {
@@ -126,21 +155,21 @@ export async function readMediaAsset(reference: string): Promise<Blob | null> {
     return readLegacyMediaAsset(reference)
   }
   if (response.status === 404) return readLegacyMediaAsset(reference)
-  if (!response.ok) throw await responseError(response, 'Could not load this saved image.')
+  if (!response.ok) throw await responseError(response, 'Could not load this saved media.')
   return response.blob()
 }
 
 export async function mediaAssetAsDataUrl(reference: string): Promise<string> {
   const blob = await readMediaAsset(reference)
-  if (!blob) throw new Error('An uploaded image is missing from the server and this browser. Import a full config export or upload a replacement.')
+  if (!blob) throw new Error('An uploaded media file is missing from the server and this browser. Import a full config export or upload a replacement.')
 
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => {
       if (typeof reader.result === 'string') resolve(reader.result)
-      else reject(new Error('Could not encode an image for export.'))
+      else reject(new Error('Could not encode media for export.'))
     }
-    reader.onerror = () => reject(reader.error ?? new Error('Could not encode an image for export.'))
+    reader.onerror = () => reject(reader.error ?? new Error('Could not encode media for export.'))
     reader.readAsDataURL(blob)
   })
 }
@@ -154,4 +183,16 @@ export async function storeEmbeddedImage(dataUrl: string): Promise<string> {
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
   const extension = match[1] === 'image/jpeg' ? 'jpg' : match[1].slice('image/'.length)
   return storeMediaAsset(new Blob([bytes], { type: match[1] }), `Imported image.${extension}`)
+}
+
+export async function storeEmbeddedAudio(dataUrl: string): Promise<string> {
+  const match = /^data:(audio\/(?:mpeg|mp3|wav|x-wav|ogg));base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl)
+  if (!match) throw new Error('Imported sound data must be MP3, WAV, or OGG.')
+
+  const mimeType = match[1] === 'audio/mp3' ? 'audio/mpeg' : match[1] === 'audio/x-wav' ? 'audio/wav' : match[1]
+  const binary = window.atob(match[2])
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  const extension = mimeType === 'audio/mpeg' ? 'mp3' : mimeType.slice('audio/'.length)
+  return storeAudioAsset(new Blob([bytes], { type: mimeType }), `Imported sound.${extension}`)
 }

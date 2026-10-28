@@ -3,14 +3,18 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { CONFIG_STORAGE_KEY, createDefaultGameConfig, parseGameConfig } from './gameConfig'
 import type { Category, Clue, GameConfig } from './gameConfig'
 import {
+  isEmbeddedAudioReference,
   isEmbeddedImageReference,
   isMediaAssetReference,
+  listAudioAssets,
   listMediaAssets,
   mediaAssetAsDataUrl,
   mediaAssetUrl,
   readMediaAsset,
-  storeMediaAsset,
+  storeAudioAsset,
+  storeEmbeddedAudio,
   storeEmbeddedImage,
+  storeMediaAsset,
 } from './mediaStore'
 import type { MediaAsset } from './mediaStore'
 
@@ -34,10 +38,18 @@ const SPECIAL_REVEAL_COUNT = 5
 const SPECIAL_REVEAL_PENALTY = 100
 
 const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
+const MAX_AUDIO_UPLOAD_BYTES = 10 * 1024 * 1024
 const ACCEPTED_IMAGE_TYPES: Record<string, true> = {
   'image/png': true,
   'image/jpeg': true,
   'image/webp': true,
+}
+const ACCEPTED_AUDIO_TYPES: Record<string, true> = {
+  'audio/mpeg': true,
+  'audio/mp3': true,
+  'audio/wav': true,
+  'audio/x-wav': true,
+  'audio/ogg': true,
 }
 
 function loadSavedConfiguration(): GameConfig {
@@ -75,6 +87,7 @@ const adminPoints = ref('100')
 const adminMessage = ref('')
 const configFileInputRef = ref<HTMLInputElement | null>(null)
 const mediaLibrary = ref<MediaAsset[]>([])
+const audioLibrary = ref<MediaAsset[]>([])
 const mediaError = ref('')
 const configCategoryId = ref(categories.value[0]?.id ?? '')
 const configCategoryName = ref('')
@@ -86,7 +99,7 @@ const configClueValue = ref('100')
 const configCluePrompt = ref('')
 const configClueAnswer = ref('')
 const configAcceptedAnswers = ref('')
-const configClueMode = ref<'standard' | 'frames' | 'zoom'>('standard')
+const configClueMode = ref<'standard' | 'frames' | 'zoom' | 'audio'>('standard')
 const adminCategoryId = ref(categories.value[0]?.id ?? '')
 const adminClueValue = ref(String(categories.value[0]?.clues[0]?.value ?? ''))
 const revealStage = ref(1)
@@ -143,6 +156,7 @@ function collectMediaReferences(categoryList: Category[] = categories.value): st
     for (const clue of category.clues) {
       if (clue.mode === 'frames') references.push(...clue.frames)
       else if (clue.mode === 'zoom') references.push(clue.image)
+      else if (clue.mode === 'audio') references.push(clue.audio)
     }
   }
   return references
@@ -159,6 +173,8 @@ function replaceMediaReference(oldReference: string, newReference: string): void
         clue.frames = clue.frames.map((reference) => reference === oldReference ? newReference : reference)
       } else if (clue.mode === 'zoom' && clue.image === oldReference) {
         clue.image = newReference
+      } else if (clue.mode === 'audio' && clue.audio === oldReference) {
+        clue.audio = newReference
       }
     }
   }
@@ -172,15 +188,18 @@ function legacyMediaName(reference: string): string {
         if (frameIndex >= 0) return `${category.name} — ${clue.value} points — frame ${frameIndex + 1}`
       } else if (clue.mode === 'zoom' && clue.image === reference) {
         return `${category.name} — ${clue.value} points — zoom image`
+      } else if (clue.mode === 'audio' && clue.audio === reference) {
+        return `${category.name} — ${clue.value} points — sound clip`
       }
     }
   }
-  return 'Recovered image'
+  return 'Recovered media'
 }
 
 async function refreshMediaSources(): Promise<void> {
   try {
-    const available = new Set((await listMediaAssets()).map((asset) => asset.reference))
+    const [imageAssets, audioAssets] = await Promise.all([listMediaAssets(), listAudioAssets()])
+    const available = new Set([...imageAssets, ...audioAssets].map((asset) => asset.reference))
     const references = [...new Set(collectMediaReferences(categories.value).filter(isMediaAssetReference))]
     const missing: string[] = []
     let migrated = false
@@ -193,7 +212,9 @@ async function refreshMediaSources(): Promise<void> {
           missing.push(reference)
           continue
         }
-        const replacement = await storeMediaAsset(blob, legacyMediaName(reference))
+        const replacement = blob.type.toLowerCase().startsWith('audio/')
+          ? await storeAudioAsset(blob, legacyMediaName(reference))
+          : await storeMediaAsset(blob, legacyMediaName(reference))
         replaceMediaReference(reference, replacement)
         available.add(replacement)
         migrated = true
@@ -202,44 +223,52 @@ async function refreshMediaSources(): Promise<void> {
       }
     }
 
-    mediaLibrary.value = await listMediaAssets()
+    const [savedImages, savedAudio] = await Promise.all([listMediaAssets(), listAudioAssets()])
+    mediaLibrary.value = savedImages
+    audioLibrary.value = savedAudio
     const errors: string[] = []
     if (missing.length) {
-      errors.push(`${missing.length} older uploaded image${missing.length === 1 ? '' : 's'} could not be moved to this server. Import a full config export or upload replacements.`)
+      errors.push(`${missing.length} older uploaded media file${missing.length === 1 ? '' : 's'} could not be moved to this server. Import a full config export or upload replacements.`)
     }
     if (migrated && !persistConfiguration()) {
-      errors.push('Images were moved to the server, but the updated clue references could not be saved in this browser. Export the configuration.')
+      errors.push('Media files were moved to the server, but the updated clue references could not be saved in this browser. Export the configuration.')
     }
     mediaError.value = errors.join(' ')
   } catch (error) {
     mediaLibrary.value = []
-    mediaError.value = error instanceof Error ? error.message : 'Could not load the server image library.'
+    audioLibrary.value = []
+    mediaError.value = error instanceof Error ? error.message : 'Could not load the server media libraries.'
   }
 }
-function assignExistingMedia(event: Event, frameIndex?: number): void {
+
+function assignExistingMedia(event: Event, frameIndex?: number, mediaType: 'image' | 'audio' = 'image'): void {
   const select = event.currentTarget as HTMLSelectElement
   const reference = select.value
   const selected = configSelectedClue.value
   const category = configCategory.value
-  if (!reference || !selected?.mode || !category || !mediaLibrary.value.some((asset) => asset.reference === reference)) return
+  const library = mediaType === 'audio' ? audioLibrary.value : mediaLibrary.value
+  if (!reference || !selected?.mode || !category || !library.some((asset) => asset.reference === reference)) return
 
   const clue = category.clues.find((item) => item.value === selected.value)
   if (!clue || clue.mode !== selected.mode) return
 
   let description: string
-  if (clue.mode === 'frames') {
+  if (clue.mode === 'frames' && mediaType === 'image') {
     if (frameIndex === undefined || frameIndex < 0 || frameIndex >= clue.frames.length) return
     clue.frames[frameIndex] = reference
     description = `frame ${frameIndex + 1}`
-  } else if (clue.mode === 'zoom' && frameIndex === undefined) {
+  } else if (clue.mode === 'zoom' && mediaType === 'image' && frameIndex === undefined) {
     clue.image = reference
     description = 'zoom image'
+  } else if (clue.mode === 'audio' && mediaType === 'audio' && frameIndex === undefined) {
+    clue.audio = reference
+    description = 'sound clip'
   } else {
     return
   }
 
   mediaError.value = ''
-  commitConfigurationChange(`Selected a saved image for the ${description} in the ${clue.value}-point clue.`)
+  commitConfigurationChange(`Selected a saved ${description} for the ${clue.value}-point clue.`)
 }
 
 async function uploadConfigImage(event: Event, frameIndex?: number): Promise<void> {
@@ -292,6 +321,41 @@ async function uploadConfigImage(event: Event, frameIndex?: number): Promise<voi
   }
 }
 
+async function uploadConfigAudio(event: Event): Promise<void> {
+  const input = event.currentTarget as HTMLInputElement
+  const file = input.files?.[0]
+  const selected = configSelectedClue.value
+  const categoryId = configCategory.value?.id
+  if (!file || !selected || selected.mode !== 'audio' || !categoryId) return
+
+  if (!Object.hasOwn(ACCEPTED_AUDIO_TYPES, file.type.toLowerCase())) {
+    adminMessage.value = 'Choose an MP3, WAV, or OGG sound file.'
+    input.value = ''
+    return
+  }
+  if (file.size > MAX_AUDIO_UPLOAD_BYTES) {
+    adminMessage.value = 'Sound files must be 10 MB or smaller.'
+    input.value = ''
+    return
+  }
+
+  try {
+    const storedReference = await storeAudioAsset(file, file.name)
+    const category = categories.value.find((item) => item.id === categoryId)
+    const clue = category?.clues.find((item) => item.value === selected.value)
+    if (!clue || clue.mode !== 'audio') throw new Error('The selected clue changed before the upload finished. Try again.')
+
+    clue.audio = storedReference
+    mediaError.value = ''
+    commitConfigurationChange(`Uploaded a sound clip for the ${clue.value}-point clue. It is now available in the saved audio library.`)
+    await refreshMediaSources()
+  } catch (error) {
+    adminMessage.value = error instanceof Error ? error.message : 'Could not upload that sound file.'
+  } finally {
+    input.value = ''
+  }
+}
+
 async function optimizeUploadedImage(file: File): Promise<Blob> {
   const bitmap = await createImageBitmap(file)
   try {
@@ -323,6 +387,8 @@ async function storeEmbeddedMedia(configuration: GameConfig): Promise<GameConfig
         }
       } else if (clue.mode === 'zoom' && isEmbeddedImageReference(clue.image)) {
         clue.image = await storeEmbeddedImage(clue.image)
+      } else if (clue.mode === 'audio' && isEmbeddedAudioReference(clue.audio)) {
+        clue.audio = await storeEmbeddedAudio(clue.audio)
       }
     }
   }
@@ -690,7 +756,7 @@ function loadConfigClue(index: number): void {
   configClueValue.value = String(clue?.value ?? nextAvailableClueValue(category))
   configCluePrompt.value = clue?.prompt ?? ''
   configClueAnswer.value = clue?.answer ?? ''
-  configAcceptedAnswers.value = clue?.mode ? clue.acceptedAnswers.join('\n') : ''
+  configAcceptedAnswers.value = clue?.mode === 'zoom' ? clue.acceptedAnswers.join('\n') : ''
   configClueMode.value = clue?.mode ?? 'standard'
   adminClueValue.value = String(clue?.value ?? category.clues[0]?.value ?? '')
 }
@@ -827,7 +893,7 @@ function saveConfigClue(): void {
     adminMessage.value = 'Clue answers must contain 1–1,000 characters.'
     return
   }
-  if (configClueMode.value !== 'standard' && acceptedAnswers.some((item) => item.length > 200)) {
+  if (configClueMode.value === 'zoom' && acceptedAnswers.some((item) => item.length > 200)) {
     adminMessage.value = 'Each accepted-answer variant must be 200 characters or fewer.'
     return
   }
@@ -844,10 +910,13 @@ function saveConfigClue(): void {
     const frames = existing?.mode === 'frames'
       ? [...existing.frames]
       : Array.from({ length: SPECIAL_REVEAL_COUNT }, (_, index) => `/mini-games/uploads/frame-${index + 1}.webp`)
-    updatedClue = { value, prompt, answer, mode: 'frames', acceptedAnswers, frames }
+    updatedClue = { value, prompt, answer, mode: 'frames', frames }
   } else if (configClueMode.value === 'zoom') {
     const image = existing?.mode === 'zoom' ? existing.image : '/mini-games/uploads/zoom.webp'
     updatedClue = { value, prompt, answer, mode: 'zoom', acceptedAnswers, image }
+  } else if (configClueMode.value === 'audio') {
+    const audio = existing?.mode === 'audio' ? existing.audio : '/mini-games/uploads/sound.mp3'
+    updatedClue = { value, prompt, answer, mode: 'audio', audio }
   } else {
     updatedClue = { value, prompt, answer }
   }
@@ -887,6 +956,8 @@ async function exportConfiguration(): Promise<void> {
           }
         } else if (clue.mode === 'zoom' && isMediaAssetReference(clue.image)) {
           clue.image = await mediaAssetAsDataUrl(clue.image)
+        } else if (clue.mode === 'audio' && isMediaAssetReference(clue.audio)) {
+          clue.audio = await mediaAssetAsDataUrl(clue.audio)
         }
       }
     }
@@ -901,7 +972,7 @@ async function exportConfiguration(): Promise<void> {
     download.click()
     download.remove()
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-    adminMessage.value = 'Exported the board configuration and uploaded images as JSON.'
+    adminMessage.value = 'Exported the board configuration with uploaded images and sounds embedded as JSON.'
   } catch (error) {
     adminMessage.value = error instanceof Error ? error.message : 'Could not export this configuration.'
   }
@@ -998,7 +1069,7 @@ function normalizeAnswer(value: string): string {
 
 function finishSpecial(correct: boolean): void {
   const selected = selectedClue.value
-  if (!selected || !selected.clue.mode || specialOutcome.value || isPlayed(selected.category, selected.clue)) return
+  if (!selected || (selected.clue.mode !== 'frames' && selected.clue.mode !== 'zoom') || specialOutcome.value || isPlayed(selected.category, selected.clue)) return
 
   const key = clueKey(selected.category, selected.clue)
   const awarded = correct ? currentSpecialReward.value : 0
@@ -1011,9 +1082,27 @@ function finishSpecial(correct: boolean): void {
   persistGame()
 }
 
+function judgeFrameAnswer(correct: boolean): void {
+  const selected = selectedClue.value
+  if (!selected || selected.clue.mode !== 'frames' || specialOutcome.value || reviewMode.value || isPlayed(selected.category, selected.clue)) return
+
+  if (correct) {
+    finishSpecial(true)
+    return
+  }
+
+  if (revealStage.value < SPECIAL_REVEAL_COUNT) {
+    revealStage.value += 1
+    specialFeedback.value = `Incorrect. Frame ${revealStage.value} revealed. Potential score: ${currentSpecialReward.value}.`
+    return
+  }
+
+  finishSpecial(false)
+}
+
 function submitSpecialGuess(): void {
   const selected = selectedClue.value
-  if (!selected || !selected.clue.mode || specialOutcome.value) return
+  if (!selected || selected.clue.mode !== 'zoom' || specialOutcome.value) return
 
   const guess = normalizeAnswer(specialGuess.value)
   if (!guess) {
@@ -1030,8 +1119,7 @@ function submitSpecialGuess(): void {
   specialGuess.value = ''
   if (revealStage.value < SPECIAL_REVEAL_COUNT) {
     revealStage.value += 1
-    const nextReveal = selected.clue.mode === 'frames' ? 'frame' : 'view'
-    specialFeedback.value = `Not quite. The next ${nextReveal} costs ${SPECIAL_REVEAL_PENALTY} points. Potential score: ${currentSpecialReward.value}.`
+    specialFeedback.value = `Not quite. The next reveal costs ${SPECIAL_REVEAL_PENALTY} points. Potential score: ${currentSpecialReward.value}.`
     return
   }
 
@@ -1040,7 +1128,7 @@ function submitSpecialGuess(): void {
 
 function scoreClue(correct: boolean): void {
   const selected = selectedClue.value
-  if (!selected || selected.clue.mode || isPlayed(selected.category, selected.clue)) return
+  if (!selected || (selected.clue.mode !== undefined && selected.clue.mode !== 'audio') || isPlayed(selected.category, selected.clue)) return
   const key = clueKey(selected.category, selected.clue)
   teams.value[activeTeamIndex.value].score += correct ? selected.clue.value : -selected.clue.value
   played.value = { ...played.value, [key]: correct ? 'correct' : 'missed' }
@@ -1179,12 +1267,15 @@ watch(selectedClue, (selected) => {
               v-for="clue in category.clues"
               :key="clue.value"
               class="clue-tile"
-              :class="{ 'clue-tile-played': isPlayed(category, clue) }"
+              :class="{ 'clue-tile-played': isPlayed(category, clue), 'clue-tile-audio': clue.mode === 'audio' }"
               type="button"
-              :aria-label="`${category.name}, ${clue.value} points${isPlayed(category, clue) ? ', already played' : ''}`"
+              :aria-label="`${category.name}, ${clue.value} points${clue.mode === 'audio' ? ', sound clue' : ''}${isPlayed(category, clue) ? ', already played' : ''}`"
               @click="openClue(category, clue)"
             >
-              <span v-if="!isPlayed(category, clue)">{{ clue.value }}</span>
+              <span v-if="!isPlayed(category, clue)" :class="{ 'clue-tile-audio-value': clue.mode === 'audio' }">
+                <span v-if="clue.mode === 'audio'" class="clue-tile-audio-label" aria-hidden="true">SOUND</span>
+                {{ clue.value }}
+              </span>
               <span v-else aria-hidden="true">{{ played[clueKey(category, clue)] === 'correct' ? '✓' : '×' }}</span>
             </button>
           </article>
@@ -1209,7 +1300,7 @@ watch(selectedClue, (selected) => {
           {{ selectedClue.category.name }}
         </div>
         <p class="modal-value">
-          <template v-if="selectedClue.clue.mode">
+          <template v-if="selectedClue.clue.mode && selectedClue.clue.mode !== 'audio'">
             {{ reviewMode ? selectedClue.clue.value : specialOutcome === 'missed' ? 0 : currentSpecialReward }}
             <span>{{ reviewMode ? 'CLUE VALUE' : specialOutcome ? 'POINTS AWARDED' : 'POTENTIAL POINTS' }}</span>
           </template>
@@ -1219,7 +1310,14 @@ watch(selectedClue, (selected) => {
         </p>
         <h2 id="clue-title" class="clue-prompt">{{ selectedClue.clue.prompt }}</h2>
 
-        <template v-if="selectedClue.clue.mode === undefined">
+        <div v-if="selectedClue.clue.mode === 'audio'" class="audio-clue-player">
+          <span>Listen to the sound</span>
+          <audio :src="mediaAssetUrl(selectedClue.clue.audio)" controls preload="metadata" aria-label="Play sound clue">
+            Your browser does not support audio playback.
+          </audio>
+        </div>
+
+        <template v-if="selectedClue.clue.mode === undefined || selectedClue.clue.mode === 'audio'">
           <div v-if="reviewMode" class="review-summary">
             <span>COMPLETED CLUE</span>
             <p>Answer: {{ selectedClue.clue.answer }}</p>
@@ -1257,7 +1355,8 @@ watch(selectedClue, (selected) => {
             <strong>{{ revealStage }}</strong> / {{ SPECIAL_REVEAL_COUNT }}
             <span class="special-stake">{{ currentSpecialReward }} points at stake</span>
           </p>
-          <p v-if="!specialOutcome && !reviewMode" class="special-rules">Every extra {{ selectedClue.clue.mode === 'frames' ? 'frame' : 'reveal' }} costs {{ SPECIAL_REVEAL_PENALTY }} points.</p>
+          <p v-if="selectedClue.clue.mode === 'frames' && !specialOutcome && !reviewMode" class="special-rules">The host judges each answer. Every incorrect guess reveals the next frame and costs {{ SPECIAL_REVEAL_PENALTY }} points.</p>
+          <p v-else-if="selectedClue.clue.mode === 'zoom' && !specialOutcome && !reviewMode" class="special-rules">Every extra reveal costs {{ SPECIAL_REVEAL_PENALTY }} points.</p>
           <p v-else-if="selectedClue.clue.mode === 'frames' && !reviewMode" class="special-rules">Scroll through all five frames below.</p>
 
           <button
@@ -1283,8 +1382,20 @@ watch(selectedClue, (selected) => {
             />
           </button>
 
-          <form v-if="!specialOutcome && !reviewMode" class="special-guess-form" @submit.prevent="submitSpecialGuess">
-            <label for="special-guess">{{ selectedClue.clue.mode === 'frames' ? 'Guess the movie' : 'Guess the costume or character' }}</label>
+          <div v-if="selectedClue.clue.mode === 'frames' && !specialOutcome && !reviewMode" class="judging-panel">
+            <p>Host: was <strong>{{ currentTeam.name }}</strong> correct?</p>
+            <div class="judging-actions">
+              <button class="judge-button judge-correct" type="button" @click="judgeFrameAnswer(true)">
+                <span aria-hidden="true">✓</span> Correct <b>+{{ currentSpecialReward }}</b>
+              </button>
+              <button class="judge-button judge-missed" type="button" @click="judgeFrameAnswer(false)">
+                <span aria-hidden="true">×</span> Incorrect <b>{{ revealStage < SPECIAL_REVEAL_COUNT ? `Next frame · −${SPECIAL_REVEAL_PENALTY}` : 'End clue' }}</b>
+              </button>
+            </div>
+          </div>
+
+          <form v-if="selectedClue.clue.mode === 'zoom' && !specialOutcome && !reviewMode" class="special-guess-form" @submit.prevent="submitSpecialGuess">
+            <label for="special-guess">Guess the costume or character</label>
             <div class="special-guess-entry">
               <input
                 id="special-guess"
@@ -1292,7 +1403,7 @@ watch(selectedClue, (selected) => {
                 type="text"
                 maxlength="80"
                 autocomplete="off"
-                :placeholder="selectedClue.clue.mode === 'frames' ? 'Type a movie title' : 'Name the costume'"
+                placeholder="Name the costume"
                 autofocus
               />
               <button class="special-submit-button" type="submit">Guess</button>
@@ -1343,7 +1454,7 @@ watch(selectedClue, (selected) => {
       @keydown.left.stop.prevent="stepFrame(-1)"
       @keydown.right.stop.prevent="stepFrame(1)"
     >
-      <div v-if="selectedClue && selectedClue.clue.mode" class="frame-viewer-content">
+      <div v-if="selectedClue && (selectedClue.clue.mode === 'frames' || selectedClue.clue.mode === 'zoom')" class="frame-viewer-content">
         <button class="dialog-close" type="button" aria-label="Close image viewer" autofocus @click="closeFrameViewer">×</button>
         <h2 id="frame-viewer-title" class="frame-viewer-title">
           <template v-if="selectedClue.clue.mode === 'frames'">
@@ -1542,7 +1653,7 @@ watch(selectedClue, (selected) => {
             <h3 id="admin-config-title">Board configuration</h3>
             <span>{{ categories.length }} categories · {{ totalClueCount }} clues</span>
           </div>
-          <p class="admin-config-note">Configuration is saved in this browser. Export JSON to back it up or move it to another device. Team scores are separate.</p>
+          <p class="admin-config-note">Configuration is saved in this browser. Export JSON to back it up or move it to another device; uploaded images and sounds are embedded. Team scores are separate.</p>
           <div class="admin-config-transfer">
             <button class="admin-secondary-button" type="button" @click="exportConfiguration">Export config JSON</button>
             <button class="admin-secondary-button" type="button" @click="requestConfigImport">Import config JSON</button>
@@ -1554,12 +1665,12 @@ watch(selectedClue, (selected) => {
               @change="importConfiguration"
             />
           </div>
-          <p class="admin-note">Upload each picture once to the server library, then reuse it from any frame or zoom clue. Config exports include attached pictures.</p>
+          <p class="admin-note">Upload each picture or sound once to the server library, then reuse it in any clue. Config exports embed attached media.</p>
 
           <div class="admin-config-editor">
             <div class="admin-editor-heading">
               <h4>Categories and clues</h4>
-              <p>Edit the board, questions, answers, and clue images here.</p>
+              <p>Edit the board, questions, answers, and clue media here.</p>
             </div>
             <div class="admin-config-editor-body">
               <div class="admin-config-category-fields">
@@ -1634,6 +1745,7 @@ watch(selectedClue, (selected) => {
                       <option value="standard">Standard question</option>
                       <option value="frames">Movie frames · five images</option>
                       <option value="zoom">Zoomed-in picture</option>
+                      <option value="audio">Sound clip</option>
                     </select>
                   </label>
                   <label class="admin-field admin-clue-prompt-field" for="config-clue-prompt">
@@ -1644,7 +1756,7 @@ watch(selectedClue, (selected) => {
                     <span>Answer</span>
                     <textarea id="config-clue-answer" v-model="configClueAnswer" rows="2" maxlength="1000" @input="adminMessage = ''"></textarea>
                   </label>
-                  <label v-if="configClueMode !== 'standard'" class="admin-field admin-clue-accepted-answers-field" for="config-clue-accepted-answers">
+                  <label v-if="configClueMode === 'zoom'" class="admin-field admin-clue-accepted-answers-field" for="config-clue-accepted-answers">
                     <span>Accepted answers (one per line)</span>
                     <textarea id="config-clue-accepted-answers" v-model="configAcceptedAnswers" rows="2" maxlength="2000" @input="adminMessage = ''"></textarea>
                   </label>
@@ -1670,7 +1782,28 @@ watch(selectedClue, (selected) => {
                     <span class="admin-media-upload-label">Or upload a new image</span>
                     <input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Upload zoomed-in clue picture" @change="uploadConfigImage($event)" />
                   </label>
-                  <p v-if="configClueMode !== 'standard'" class="admin-note">
+                  <label v-else-if="configClueMode === 'audio' && configSelectedClue?.mode === 'audio'" class="admin-media-slot admin-media-slot-audio">
+                    <span>Sound clip</span>
+                    <audio
+                      v-if="!configSelectedClue.audio.startsWith('/mini-games/uploads/')"
+                      :src="mediaAssetUrl(configSelectedClue.audio)"
+                      controls
+                      preload="metadata"
+                      aria-label="Preview saved sound clip"
+                    ></audio>
+                    <select aria-label="Choose saved sound" :value="isMediaAssetReference(configSelectedClue.audio) ? configSelectedClue.audio : ''" @change="assignExistingMedia($event, undefined, 'audio')">
+                      <option value="">Choose a saved sound…</option>
+                      <option v-for="asset in audioLibrary" :key="asset.reference" :value="asset.reference">{{ asset.name }}</option>
+                    </select>
+                    <span class="admin-media-upload-label">Or upload an MP3, WAV, or OGG sound file</span>
+                    <input type="file" accept="audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/ogg,.mp3,.wav,.ogg" aria-label="Upload sound clip" @change="uploadConfigAudio($event)" />
+                  </label>
+                  <p v-if="configClueMode === 'audio'" class="admin-note">
+                    {{ configSelectedClue?.mode === 'audio'
+                      ? 'Sounds are saved on this server and can be reused by any clue. Choose a saved sound or upload a new one; JSON exports embed sound files.'
+                      : 'Save this clue first to create its sound slot. Then choose a saved sound or upload a new one to the server library.' }}
+                  </p>
+                  <p v-else-if="configClueMode !== 'standard'" class="admin-note">
                     {{ configSelectedClue?.mode === configClueMode
                       ? 'Images are saved on this server and can be reused by any clue on this server. Choose a saved image or upload a new one; JSON exports embed the images.'
                       : configClueMode === 'frames'

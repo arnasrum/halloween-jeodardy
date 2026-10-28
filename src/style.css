@@ -1270,6 +1270,7 @@ a:focus-visible,
   object-fit: contain;
 }
 
+.admin-media-slot select,
 .admin-media-slot input[type="file"] {
   width: 100%;
   min-width: 0;
@@ -1279,6 +1280,12 @@ a:focus-visible,
   background: #100b1d;
   color: #c8bfe0;
   font: inherit;
+  font-size: 9px;
+}
+
+.admin-media-upload-label {
+  margin-top: 1px;
+  color: #c8bfe0;
   font-size: 9px;
 }
 

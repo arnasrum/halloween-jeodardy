@@ -5,12 +5,14 @@ import type { Category, Clue, GameConfig } from './gameConfig'
 import {
   isEmbeddedImageReference,
   isMediaAssetReference,
+  listMediaAssets,
   mediaAssetAsDataUrl,
-  pruneUnusedMediaAssets,
+  mediaAssetUrl,
   readMediaAsset,
   storeMediaAsset,
   storeEmbeddedImage,
 } from './mediaStore'
+import type { MediaAsset } from './mediaStore'
 
 
 type SelectedClue = {
@@ -32,7 +34,11 @@ const SPECIAL_REVEAL_COUNT = 5
 const SPECIAL_REVEAL_PENALTY = 100
 
 const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
-const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const ACCEPTED_IMAGE_TYPES: Record<string, true> = {
+  'image/png': true,
+  'image/jpeg': true,
+  'image/webp': true,
+}
 
 function loadSavedConfiguration(): GameConfig {
   try {
@@ -68,7 +74,7 @@ const adminTeamScore = ref('0')
 const adminPoints = ref('100')
 const adminMessage = ref('')
 const configFileInputRef = ref<HTMLInputElement | null>(null)
-const mediaSourceUrls = ref<Record<string, string>>({})
+const mediaLibrary = ref<MediaAsset[]>([])
 const mediaError = ref('')
 const configCategoryId = ref(categories.value[0]?.id ?? '')
 const configCategoryName = ref('')
@@ -129,7 +135,6 @@ onUnmounted(() => {
   motionPreference.removeEventListener('change', updateReducedMotion)
   document.removeEventListener('fullscreenchange', updateFullscreenState)
   window.removeEventListener('popstate', syncAdminRoute)
-  for (const url of Object.values(mediaSourceUrls.value)) URL.revokeObjectURL(url)
 })
 
 function collectMediaReferences(categoryList: Category[] = categories.value): string[] {
@@ -144,32 +149,147 @@ function collectMediaReferences(categoryList: Category[] = categories.value): st
 }
 
 function imageSource(reference: string): string {
-  return mediaSourceUrls.value[reference] ?? reference
+  return mediaAssetUrl(reference)
+}
+
+function replaceMediaReference(oldReference: string, newReference: string): void {
+  for (const category of categories.value) {
+    for (const clue of category.clues) {
+      if (clue.mode === 'frames') {
+        clue.frames = clue.frames.map((reference) => reference === oldReference ? newReference : reference)
+      } else if (clue.mode === 'zoom' && clue.image === oldReference) {
+        clue.image = newReference
+      }
+    }
+  }
+}
+
+function legacyMediaName(reference: string): string {
+  for (const category of categories.value) {
+    for (const clue of category.clues) {
+      if (clue.mode === 'frames') {
+        const frameIndex = clue.frames.indexOf(reference)
+        if (frameIndex >= 0) return `${category.name} — ${clue.value} points — frame ${frameIndex + 1}`
+      } else if (clue.mode === 'zoom' && clue.image === reference) {
+        return `${category.name} — ${clue.value} points — zoom image`
+      }
+    }
+  }
+  return 'Recovered image'
 }
 
 async function refreshMediaSources(): Promise<void> {
-  const references = [...new Set(collectMediaReferences(categories.value).filter(isMediaAssetReference))]
-  const nextSources: Record<string, string> = {}
-  const missing: string[] = []
-
   try {
-    await Promise.all(references.map(async (reference) => {
-      const blob = await readMediaAsset(reference)
-      if (blob) nextSources[reference] = URL.createObjectURL(blob)
-      else missing.push(reference)
-    }))
-  } catch {
-    for (const url of Object.values(mediaSourceUrls.value)) URL.revokeObjectURL(url)
-    mediaSourceUrls.value = {}
-    mediaError.value = 'Could not load uploaded images from this browser.'
+    const available = new Set((await listMediaAssets()).map((asset) => asset.reference))
+    const references = [...new Set(collectMediaReferences(categories.value).filter(isMediaAssetReference))]
+    const missing: string[] = []
+    let migrated = false
+
+    for (const reference of references) {
+      if (available.has(reference)) continue
+      try {
+        const blob = await readMediaAsset(reference)
+        if (!blob) {
+          missing.push(reference)
+          continue
+        }
+        const replacement = await storeMediaAsset(blob, legacyMediaName(reference))
+        replaceMediaReference(reference, replacement)
+        available.add(replacement)
+        migrated = true
+      } catch {
+        missing.push(reference)
+      }
+    }
+
+    mediaLibrary.value = await listMediaAssets()
+    const errors: string[] = []
+    if (missing.length) {
+      errors.push(`${missing.length} older uploaded image${missing.length === 1 ? '' : 's'} could not be moved to this server. Import a full config export or upload replacements.`)
+    }
+    if (migrated && !persistConfiguration()) {
+      errors.push('Images were moved to the server, but the updated clue references could not be saved in this browser. Export the configuration.')
+    }
+    mediaError.value = errors.join(' ')
+  } catch (error) {
+    mediaLibrary.value = []
+    mediaError.value = error instanceof Error ? error.message : 'Could not load the server image library.'
+  }
+}
+function assignExistingMedia(event: Event, frameIndex?: number): void {
+  const select = event.currentTarget as HTMLSelectElement
+  const reference = select.value
+  const selected = configSelectedClue.value
+  const category = configCategory.value
+  if (!reference || !selected?.mode || !category || !mediaLibrary.value.some((asset) => asset.reference === reference)) return
+
+  const clue = category.clues.find((item) => item.value === selected.value)
+  if (!clue || clue.mode !== selected.mode) return
+
+  let description: string
+  if (clue.mode === 'frames') {
+    if (frameIndex === undefined || frameIndex < 0 || frameIndex >= clue.frames.length) return
+    clue.frames[frameIndex] = reference
+    description = `frame ${frameIndex + 1}`
+  } else if (clue.mode === 'zoom' && frameIndex === undefined) {
+    clue.image = reference
+    description = 'zoom image'
+  } else {
     return
   }
 
-  for (const url of Object.values(mediaSourceUrls.value)) URL.revokeObjectURL(url)
-  mediaSourceUrls.value = nextSources
-  mediaError.value = missing.length
-    ? `${missing.length} uploaded image${missing.length === 1 ? '' : 's'} missing from this browser. Import a full config export or upload replacements.`
-    : ''
+  mediaError.value = ''
+  commitConfigurationChange(`Selected a saved image for the ${description} in the ${clue.value}-point clue.`)
+}
+
+async function uploadConfigImage(event: Event, frameIndex?: number): Promise<void> {
+  const input = event.currentTarget as HTMLInputElement
+  const file = input.files?.[0]
+  const selected = configSelectedClue.value
+  const categoryId = configCategory.value?.id
+  if (!file || !selected || !categoryId || !selected.mode) return
+
+  if (!Object.hasOwn(ACCEPTED_IMAGE_TYPES, file.type.toLowerCase())) {
+    adminMessage.value = 'Choose a PNG, JPEG, or WebP image.'
+    input.value = ''
+    return
+  }
+  if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+    adminMessage.value = 'Images must be 10 MB or smaller.'
+    input.value = ''
+    return
+  }
+
+  try {
+    const image = await optimizeUploadedImage(file)
+    const storedReference = await storeMediaAsset(image, file.name)
+
+    const category = categories.value.find((item) => item.id === categoryId)
+    const clue = category?.clues.find((item) => item.value === selected.value)
+    if (!clue || clue.mode !== selected.mode) throw new Error('The selected clue changed before the upload finished. Try again.')
+
+    let description: string
+    if (clue.mode === 'frames') {
+      if (frameIndex === undefined || frameIndex < 0 || frameIndex >= clue.frames.length) {
+        throw new Error('Could not find that movie frame slot.')
+      }
+      clue.frames[frameIndex] = storedReference
+      description = `frame ${frameIndex + 1}`
+    } else if (clue.mode === 'zoom' && frameIndex === undefined) {
+      clue.image = storedReference
+      description = 'zoom image'
+    } else {
+      throw new Error('This clue does not have a matching image slot.')
+    }
+
+    mediaError.value = ''
+    commitConfigurationChange(`Uploaded ${description} for the ${clue.value}-point clue. It is now available in the saved image library.`)
+    await refreshMediaSources()
+  } catch (error) {
+    adminMessage.value = error instanceof Error ? error.message : 'Could not upload that image.'
+  } finally {
+    input.value = ''
+  }
 }
 
 async function optimizeUploadedImage(file: File): Promise<Blob> {
@@ -209,11 +329,6 @@ async function storeEmbeddedMedia(configuration: GameConfig): Promise<GameConfig
   return parseGameConfig(configuration)
 }
 
-function pruneStoredMedia(): void {
-  void pruneUnusedMediaAssets(collectMediaReferences()).catch(() => {
-    mediaError.value = 'Could not clean up unused uploaded images in this browser.'
-  })
-}
 
 function persistGame(): void {
   try {
@@ -665,7 +780,6 @@ function removeConfigCategory(): void {
   categories.value.splice(index, 1)
   loadConfigCategory(categories.value[Math.min(index, categories.value.length - 1)]!.id)
   commitConfigurationChange(`Removed category “${category.name}”.`)
-  pruneStoredMedia()
 }
 
 function moveConfigCategory(direction: -1 | 1): void {
@@ -744,10 +858,6 @@ function saveConfigClue(): void {
   const savedIndex = category.clues.findIndex((clue) => clue.value === value)
   loadConfigClue(savedIndex)
   commitConfigurationChange(`Saved the ${value}-point clue in “${category.name}”.`)
-  if (existing && existing.mode !== updatedClue.mode) {
-    pruneStoredMedia()
-    void refreshMediaSources()
-  }
 }
 
 function removeConfigClue(): void {
@@ -760,77 +870,9 @@ function removeConfigClue(): void {
   category.clues.splice(configClueIndex.value, 1)
   loadConfigClue(Math.min(configClueIndex.value, category.clues.length - 1))
   commitConfigurationChange(`Removed the ${removedValue}-point clue from “${category.name}”.`)
-  pruneStoredMedia()
 }
 
 
-async function uploadConfigImage(event: Event, frameIndex?: number): Promise<void> {
-  const input = event.currentTarget as HTMLInputElement
-  const file = input.files?.[0]
-  const selected = configSelectedClue.value
-  const categoryId = configCategory.value?.id
-  if (!file || !selected || !categoryId || !selected.mode) return
-
-  if (!ACCEPTED_IMAGE_TYPES.has(file.type.toLowerCase())) {
-    adminMessage.value = 'Choose a PNG, JPEG, or WebP image.'
-    input.value = ''
-    return
-  }
-  if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
-    adminMessage.value = 'Images must be 10 MB or smaller.'
-    input.value = ''
-    return
-  }
-
-  let storedReference = ''
-  let previewUrl = ''
-  try {
-    const image = await optimizeUploadedImage(file)
-    storedReference = await storeMediaAsset(image)
-
-    const category = categories.value.find((item) => item.id === categoryId)
-    const clue = category?.clues.find((item) => item.value === selected.value)
-    if (!clue || clue.mode !== selected.mode) throw new Error('The selected clue changed before the upload finished. Try again.')
-
-    let oldReference = ''
-    if (clue.mode === 'frames') {
-      if (frameIndex === undefined || frameIndex < 0 || frameIndex >= clue.frames.length) {
-        throw new Error('Could not find that movie frame slot.')
-      }
-      oldReference = clue.frames[frameIndex] ?? ''
-    } else if (clue.mode === 'zoom' && frameIndex === undefined) {
-      oldReference = clue.image
-    } else {
-      throw new Error('This clue does not have a matching image slot.')
-    }
-
-    previewUrl = URL.createObjectURL(image)
-    if (clue.mode === 'frames' && frameIndex !== undefined) clue.frames[frameIndex] = storedReference
-    else if (clue.mode === 'zoom') clue.image = storedReference
-    mediaSourceUrls.value = { ...mediaSourceUrls.value, [storedReference]: previewUrl }
-    previewUrl = ''
-
-    if (oldReference && isMediaAssetReference(oldReference) && !collectMediaReferences().includes(oldReference)) {
-      const oldUrl = mediaSourceUrls.value[oldReference]
-      if (oldUrl) {
-        URL.revokeObjectURL(oldUrl)
-        const remainingUrls = { ...mediaSourceUrls.value }
-        delete remainingUrls[oldReference]
-        mediaSourceUrls.value = remainingUrls
-      }
-    }
-    mediaError.value = ''
-    const description = clue.mode === 'frames' && frameIndex !== undefined ? `frame ${frameIndex + 1}` : 'zoom image'
-    commitConfigurationChange(`Uploaded ${description} for the ${clue.value}-point clue.`)
-    pruneStoredMedia()
-  } catch (error) {
-    if (previewUrl) URL.revokeObjectURL(previewUrl)
-    if (storedReference) pruneStoredMedia()
-    adminMessage.value = error instanceof Error ? error.message : 'Could not upload that image.'
-  } finally {
-    input.value = ''
-  }
-}
 async function exportConfiguration(): Promise<void> {
   try {
     const configuration = parseGameConfig({ version: 1, categories: categories.value })
@@ -889,12 +931,10 @@ async function importConfiguration(event: Event): Promise<void> {
     await refreshMediaSources()
     const saved = persistConfiguration()
     persistGame()
-    pruneStoredMedia()
     adminMessage.value = saved
       ? `Imported ${categories.value.length} categories and ${totalClueCount.value} clues. Team scores were kept.`
       : 'Imported the board, but browser storage was unavailable. Export the configuration to keep a copy.'
   } catch (error) {
-    pruneStoredMedia()
     adminMessage.value = error instanceof Error ? error.message : 'Could not import that configuration.'
   } finally {
     input.value = ''
@@ -1514,7 +1554,7 @@ watch(selectedClue, (selected) => {
               @change="importConfiguration"
             />
           </div>
-          <p class="admin-note">Select a special clue below to upload its five movie frames or zoomed-in picture. Exports bundle uploaded images with the JSON.</p>
+          <p class="admin-note">Upload each picture once to the server library, then reuse it from any frame or zoom clue. Config exports include attached pictures.</p>
 
           <div class="admin-config-editor">
             <div class="admin-editor-heading">
@@ -1612,20 +1652,30 @@ watch(selectedClue, (selected) => {
                     <label v-for="(frame, index) in configSelectedClue.frames" :key="`frame-${index}`" class="admin-media-slot">
                       <span>Frame {{ index + 1 }}</span>
                       <img :src="imageSource(frame)" :alt="`Preview for movie frame ${index + 1}`" />
+                      <select :aria-label="`Choose saved movie frame ${index + 1}`" :value="isMediaAssetReference(frame) ? frame : ''" @change="assignExistingMedia($event, index)">
+                        <option value="">Choose a saved image…</option>
+                        <option v-for="asset in mediaLibrary" :key="asset.reference" :value="asset.reference">{{ asset.name }}</option>
+                      </select>
+                      <span class="admin-media-upload-label">Or upload a new image</span>
                       <input type="file" accept="image/png,image/jpeg,image/webp" :aria-label="`Upload movie frame ${index + 1}`" @change="uploadConfigImage($event, index)" />
                     </label>
                   </div>
                   <label v-else-if="configClueMode === 'zoom' && configSelectedClue?.mode === 'zoom'" class="admin-media-slot admin-media-slot-zoom">
                     <span>Zoomed-in picture</span>
                     <img :src="imageSource(configSelectedClue.image)" alt="Preview of zoomed-in clue image" />
+                    <select aria-label="Choose saved zoom image" :value="isMediaAssetReference(configSelectedClue.image) ? configSelectedClue.image : ''" @change="assignExistingMedia($event)">
+                      <option value="">Choose a saved image…</option>
+                      <option v-for="asset in mediaLibrary" :key="asset.reference" :value="asset.reference">{{ asset.name }}</option>
+                    </select>
+                    <span class="admin-media-upload-label">Or upload a new image</span>
                     <input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Upload zoomed-in clue picture" @change="uploadConfigImage($event)" />
                   </label>
                   <p v-if="configClueMode !== 'standard'" class="admin-note">
                     {{ configSelectedClue?.mode === configClueMode
-                      ? 'Upload PNG, JPEG, or WebP files up to 10 MB. Images are resized and stored in this browser; JSON exports embed them for transfer.'
+                      ? 'Images are saved on this server and can be reused by any clue on this server. Choose a saved image or upload a new one; JSON exports embed the images.'
                       : configClueMode === 'frames'
-                        ? 'Save this clue to create its five frame upload slots, then upload one image for each frame.'
-                        : 'Save this clue to create its zoom image upload slot, then upload its picture.' }}
+                        ? 'Save this clue first to create five frame slots. Then choose saved images or upload new images to the server library.'
+                        : 'Save this clue first to create its zoom slot. Then choose a saved image or upload a new one to the server library.' }}
                   </p>
                   <p v-if="mediaError" class="admin-note admin-media-error" role="alert">{{ mediaError }}</p>
                   <div class="admin-config-category-actions">

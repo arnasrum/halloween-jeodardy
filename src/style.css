@@ -734,7 +734,7 @@ a:focus-visible,
 }
 
 .admin-dialog {
-  width: min(480px, calc(100% - 32px));
+  width: min(760px, calc(100% - 32px));
   max-width: 100%;
   max-height: calc(100% - 32px);
   padding: 0;
@@ -784,6 +784,160 @@ a:focus-visible,
   margin: 0;
   color: var(--muted);
   font-size: 11px;
+}
+
+.admin-section + .admin-section {
+  margin-top: 21px;
+  padding-top: 19px;
+  border-top: 1px solid rgba(200, 180, 232, 0.13);
+}
+
+.admin-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.admin-section-heading h3 {
+  margin: 0;
+  color: #f4edf8;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.admin-section-heading > span {
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+}
+
+.admin-team-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(90px, 0.7fr);
+  gap: 10px;
+}
+
+.admin-team-actions,
+.admin-clue-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.admin-save-button,
+.admin-remove-team-button,
+.admin-secondary-button {
+  min-height: 40px;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 750;
+  transition: filter 150ms ease, transform 150ms ease;
+}
+
+.admin-save-button {
+  border-color: rgba(255, 155, 84, 0.42);
+  background: rgba(255, 155, 84, 0.12);
+  color: #ffc28f;
+}
+
+.admin-remove-team-button {
+  border-color: rgba(250, 117, 175, 0.22);
+  background: rgba(155, 66, 111, 0.18);
+  color: #ffb5d2;
+}
+
+.admin-secondary-button {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.035);
+  color: #d8cce4;
+}
+
+.admin-save-button:hover:not(:disabled),
+.admin-remove-team-button:hover:not(:disabled),
+.admin-secondary-button:hover:not(:disabled) {
+  filter: brightness(1.12);
+  transform: translateY(-1px);
+}
+
+.admin-save-button:disabled,
+.admin-remove-team-button:disabled,
+.admin-secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.admin-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.admin-add-team-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(200, 180, 232, 0.1);
+}
+
+.admin-points-field {
+  max-width: 220px;
+  margin-bottom: 12px;
+}
+
+.admin-clue-details {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid rgba(200, 180, 232, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.admin-clue-details p {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  color: #c4b7d6;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.admin-clue-details strong {
+  color: #f4edf8;
+  font-size: 10px;
+}
+
+.admin-clue-details > span {
+  flex: none;
+  font-size: 9px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.admin-clue-played {
+  color: #ffb5d2;
+}
+
+.admin-clue-available {
+  color: #9cf4cb;
+}
+
+.admin-clue-actions .admin-save-button {
+  flex: 1;
 }
 
 .admin-controls {
@@ -1688,8 +1842,23 @@ a:focus-visible,
     padding: 34px 18px 24px;
   }
 
+  .admin-team-editor,
   .admin-controls {
     grid-template-columns: 1fr;
+  }
+
+  .admin-add-team-form {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-team-actions,
+  .admin-clue-actions,
+  .admin-clue-details {
+    flex-direction: column;
+  }
+
+  .admin-points-field {
+    max-width: none;
   }
 
   .clue-modal-content {

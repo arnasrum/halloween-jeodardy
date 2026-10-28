@@ -190,15 +190,15 @@ const reviewMode = ref(false)
 const dialogRef = ref<HTMLDialogElement | null>(null)
 const frameViewerDialogRef = ref<HTMLDialogElement | null>(null)
 const selectedFrameIndex = ref(0)
-const showAddTeamForm = ref(false)
 const newTeamName = ref('')
-const teamFormError = ref('')
-const teamNameInput = ref<HTMLInputElement | null>(null)
 const adminDialogRef = ref<HTMLDialogElement | null>(null)
 const adminTeamIndex = ref(0)
+const adminTeamName = ref('')
+const adminTeamScore = ref('0')
 const adminPoints = ref('100')
 const adminMessage = ref('')
-
+const adminCategoryId = ref(categories[0]?.id ?? '')
+const adminClueValue = ref(String(categories[0]?.clues[0]?.value ?? ''))
 const revealStage = ref(1)
 const specialGuess = ref('')
 const specialFeedback = ref('')
@@ -324,6 +324,15 @@ restoreGame()
 const currentTeam = computed(() => teams.value[activeTeamIndex.value])
 
 const totalClueCount = categories.reduce((total, category) => total + category.clues.length, 0)
+const adminSelectedClue = computed(() => {
+  const category = categories.find((item) => item.id === adminCategoryId.value)
+  const clue = category?.clues.find((item) => String(item.value) === adminClueValue.value)
+  return category && clue ? { category, clue } : null
+})
+const adminSelectedCluePlayed = computed(() => {
+  const selected = adminSelectedClue.value
+  return selected ? isPlayed(selected.category, selected.clue) : false
+})
 const currentSpecialReward = computed(() => {
   const clue = selectedClue.value?.clue
   if (!clue?.mode) return 0
@@ -353,15 +362,108 @@ function selectTeam(index: number): void {
   persistGame()
 }
 
+function loadAdminTeam(index: number): void {
+  const team = teams.value[index]
+  if (!team) return
+  adminTeamIndex.value = index
+  adminTeamName.value = team.name
+  adminTeamScore.value = String(team.score)
+  adminMessage.value = ''
+}
+
 function openAdminPanel(): void {
-  adminTeamIndex.value = activeTeamIndex.value
+  loadAdminTeam(activeTeamIndex.value)
   adminPoints.value = '100'
+  newTeamName.value = ''
+  adminCategoryId.value = categories[0]?.id ?? ''
+  adminClueValue.value = String(categories[0]?.clues[0]?.value ?? '')
   adminMessage.value = ''
   adminDialogRef.value?.showModal()
 }
 
 function closeAdminPanel(): void {
   if (adminDialogRef.value?.open) adminDialogRef.value.close()
+}
+
+function selectAdminTeam(): void {
+  loadAdminTeam(adminTeamIndex.value)
+}
+
+function saveAdminTeam(): void {
+  const team = teams.value[adminTeamIndex.value]
+  const name = adminTeamName.value.trim()
+  const rawScore = String(adminTeamScore.value).trim()
+  const score = Number(rawScore)
+  if (!team) {
+    adminMessage.value = 'Choose a team first.'
+    return
+  }
+  if (!name) {
+    adminMessage.value = 'Enter a team name.'
+    return
+  }
+  if (name.length > 32) {
+    adminMessage.value = 'Team names must be 32 characters or fewer.'
+    return
+  }
+  if (teams.value.some((candidate, index) => index !== adminTeamIndex.value && candidate.name.toLowerCase() === name.toLowerCase())) {
+    adminMessage.value = 'That team name is already in use.'
+    return
+  }
+  if (!rawScore || !Number.isSafeInteger(score)) {
+    adminMessage.value = 'Enter a whole-number score.'
+    return
+  }
+
+  team.name = name
+  team.score = score
+  adminTeamName.value = name
+  adminTeamScore.value = String(score)
+  persistGame()
+  adminMessage.value = `Saved ${name} with ${score.toLocaleString()} points.`
+}
+
+function addAdminTeam(): void {
+  const name = newTeamName.value.trim()
+  if (!name) {
+    adminMessage.value = 'Enter a team name.'
+    return
+  }
+  if (name.length > 32) {
+    adminMessage.value = 'Team names must be 32 characters or fewer.'
+    return
+  }
+  if (teams.value.some((team) => team.name.toLowerCase() === name.toLowerCase())) {
+    adminMessage.value = 'That team name is already in use.'
+    return
+  }
+
+  teams.value.push({ name, score: 0 })
+  newTeamName.value = ''
+  loadAdminTeam(teams.value.length - 1)
+  persistGame()
+  adminMessage.value = `Added ${name}.`
+}
+
+function removeAdminTeam(): void {
+  const team = teams.value[adminTeamIndex.value]
+  if (!team) {
+    adminMessage.value = 'Choose a team first.'
+    return
+  }
+  if (teams.value.length <= 1) {
+    adminMessage.value = 'At least one team must remain.'
+    return
+  }
+  if (!window.confirm(`Remove ${team.name} and its score?`)) return
+
+  const removedIndex = adminTeamIndex.value
+  teams.value.splice(removedIndex, 1)
+  if (activeTeamIndex.value > removedIndex) activeTeamIndex.value -= 1
+  else if (activeTeamIndex.value === removedIndex) activeTeamIndex.value = Math.min(removedIndex, teams.value.length - 1)
+  loadAdminTeam(Math.min(removedIndex, teams.value.length - 1))
+  persistGame()
+  adminMessage.value = `Removed ${team.name}.`
 }
 
 function adjustTeamScore(direction: 1 | -1): void {
@@ -383,42 +485,40 @@ function adjustTeamScore(direction: 1 | -1): void {
   }
 
   team.score = updatedScore
+  adminTeamScore.value = String(updatedScore)
   persistGame()
   adminMessage.value = `${direction === 1 ? 'Added' : 'Subtracted'} ${points} points ${direction === 1 ? 'to' : 'from'} ${team.name}. New score: ${updatedScore}.`
 }
 
-function beginAddTeam(): void {
-  showAddTeamForm.value = true
-  teamFormError.value = ''
-  void nextTick(() => teamNameInput.value?.focus())
+function selectAdminCategory(): void {
+  const category = categories.find((item) => item.id === adminCategoryId.value)
+  adminClueValue.value = String(category?.clues[0]?.value ?? '')
+  adminMessage.value = ''
 }
 
-function cancelAddTeam(): void {
-  showAddTeamForm.value = false
-  newTeamName.value = ''
-  teamFormError.value = ''
-}
+function reenableSelectedClue(): void {
+  const selected = adminSelectedClue.value
+  if (!selected || !isPlayed(selected.category, selected.clue)) return
 
-function addTeam(): void {
-  const name = newTeamName.value.trim()
-  if (!name) {
-    teamFormError.value = 'Enter a team name.'
-    return
-  }
-  if (name.length > 32) {
-    teamFormError.value = 'Team names must be 32 characters or fewer.'
-    return
-  }
-  if (teams.value.some((team) => team.name.toLowerCase() === name.toLowerCase())) {
-    teamFormError.value = 'That team name is already in use.'
-    return
-  }
-
-  teams.value.push({ name, score: 0 })
-  newTeamName.value = ''
-  teamFormError.value = ''
-  showAddTeamForm.value = false
+  const key = clueKey(selected.category, selected.clue)
+  const updatedPlayed = { ...played.value }
+  delete updatedPlayed[key]
+  played.value = updatedPlayed
   persistGame()
+  adminMessage.value = `Re-enabled ${selected.category.name} for ${selected.clue.value} points.`
+}
+
+function reenableAllClues(): void {
+  const playedCount = Object.keys(played.value).length
+  if (!playedCount) {
+    adminMessage.value = 'All clues are already available.'
+    return
+  }
+  if (!window.confirm(`Re-enable all ${playedCount} played clues?`)) return
+
+  played.value = {}
+  persistGame()
+  adminMessage.value = `Re-enabled all ${playedCount} played clues.`
 }
 
 function openClue(category: Category, clue: Clue): void {
@@ -612,36 +712,7 @@ watch(selectedClue, (selected) => {
       </div>
       <div class="score-toolbar">
         <p class="turn-hint"><span class="turn-pip" aria-hidden="true"></span> Tap a team to set the active turn</p>
-        <button
-          class="add-team-trigger"
-          type="button"
-          aria-controls="team-add-form"
-          :aria-expanded="showAddTeamForm"
-          @click="showAddTeamForm ? cancelAddTeam() : beginAddTeam()"
-        >
-          <span aria-hidden="true">{{ showAddTeamForm ? '×' : '+' }}</span>
-          {{ showAddTeamForm ? 'Cancel' : 'Add team' }}
-        </button>
       </div>
-      <form v-if="showAddTeamForm" id="team-add-form" class="team-add-form" @submit.prevent="addTeam">
-        <label class="team-name-field" for="new-team-name">
-          <span>Team name</span>
-          <input
-            id="new-team-name"
-            ref="teamNameInput"
-            v-model="newTeamName"
-            type="text"
-            maxlength="32"
-            autocomplete="off"
-            placeholder="e.g. The Graveyard Shift"
-            :aria-invalid="Boolean(teamFormError)"
-            :aria-describedby="teamFormError ? 'team-name-error' : undefined"
-            @input="teamFormError = ''"
-          />
-        </label>
-        <button class="team-add-submit" type="submit">Add team</button>
-        <p v-if="teamFormError" id="team-name-error" class="team-form-error" role="alert">{{ teamFormError }}</p>
-      </form>
       <div class="team-picker">
         <button
           v-for="(team, index) in teams"
@@ -905,17 +976,59 @@ watch(selectedClue, (selected) => {
         <button class="dialog-close" type="button" aria-label="Close admin panel" @click="closeAdminPanel">×</button>
         <div class="admin-panel-heading">
           <span class="admin-eyebrow">GAME HOST</span>
-          <h2 id="admin-title">Score admin</h2>
-          <p>Adjust a team’s score directly.</p>
+          <h2 id="admin-title">Game admin</h2>
+          <p>Manage teams, scores, and the clue board.</p>
         </div>
-        <div class="admin-controls">
-          <label class="admin-field" for="admin-team">
-            <span>Team</span>
-            <select id="admin-team" v-model.number="adminTeamIndex" @change="adminMessage = ''">
-              <option v-for="(team, index) in teams" :key="team.name" :value="index">{{ team.name }}</option>
-            </select>
-          </label>
-          <label class="admin-field" for="admin-points">
+
+        <section class="admin-section" aria-labelledby="admin-teams-title">
+          <div class="admin-section-heading">
+            <h3 id="admin-teams-title">Teams</h3>
+            <span>{{ teams.length }} {{ teams.length === 1 ? 'team' : 'teams' }}</span>
+          </div>
+          <div class="admin-team-editor">
+            <label class="admin-field" for="admin-team">
+              <span>Choose team</span>
+              <select id="admin-team" v-model.number="adminTeamIndex" @change="selectAdminTeam">
+                <option v-for="(team, index) in teams" :key="team.name" :value="index">{{ team.name }}</option>
+              </select>
+            </label>
+            <label class="admin-field" for="admin-team-name">
+              <span>Team name</span>
+              <input id="admin-team-name" v-model="adminTeamName" type="text" maxlength="32" autocomplete="off" @input="adminMessage = ''" />
+            </label>
+            <label class="admin-field" for="admin-team-score">
+              <span>Score</span>
+              <input id="admin-team-score" v-model="adminTeamScore" type="number" step="1" inputmode="numeric" @input="adminMessage = ''" />
+            </label>
+          </div>
+          <div class="admin-team-actions">
+            <button class="admin-save-button" type="button" @click="saveAdminTeam">Save team changes</button>
+            <button class="admin-remove-team-button" type="button" :disabled="teams.length <= 1" @click="removeAdminTeam">Remove team</button>
+          </div>
+          <p v-if="teams.length <= 1" class="admin-note">At least one team must remain in the game.</p>
+          <form class="admin-add-team-form" @submit.prevent="addAdminTeam">
+            <label class="admin-field" for="admin-new-team-name">
+              <span>Add a team</span>
+              <input
+                id="admin-new-team-name"
+                v-model="newTeamName"
+                type="text"
+                maxlength="32"
+                autocomplete="off"
+                placeholder="e.g. The Graveyard Shift"
+                @input="adminMessage = ''"
+              />
+            </label>
+            <button class="admin-secondary-button" type="submit">Add team</button>
+          </form>
+        </section>
+
+        <section class="admin-section" aria-labelledby="admin-score-title">
+          <div class="admin-section-heading">
+            <h3 id="admin-score-title">Quick score adjustment</h3>
+            <span>Selected: {{ teams[adminTeamIndex]?.name ?? 'No team' }}</span>
+          </div>
+          <label class="admin-field admin-points-field" for="admin-points">
             <span>Points to adjust</span>
             <input
               id="admin-points"
@@ -927,12 +1040,48 @@ watch(selectedClue, (selected) => {
               @input="adminMessage = ''"
             />
           </label>
-        </div>
-        <p class="admin-current-score">Current score: <strong>{{ teams[adminTeamIndex]?.score.toLocaleString() ?? 0 }}</strong></p>
-        <div class="admin-adjustment-actions">
-          <button class="admin-add-button" type="button" @click="adjustTeamScore(1)">＋ Add points</button>
-          <button class="admin-subtract-button" type="button" @click="adjustTeamScore(-1)">− Subtract points</button>
-        </div>
+          <div class="admin-adjustment-actions">
+            <button class="admin-add-button" type="button" @click="adjustTeamScore(1)">＋ Add points</button>
+            <button class="admin-subtract-button" type="button" @click="adjustTeamScore(-1)">− Subtract points</button>
+          </div>
+        </section>
+
+        <section class="admin-section" aria-labelledby="admin-clues-title">
+          <div class="admin-section-heading">
+            <h3 id="admin-clues-title">Clue board</h3>
+            <span>{{ remainingClues }} available · {{ totalClueCount - remainingClues }} played</span>
+          </div>
+          <div class="admin-controls">
+            <label class="admin-field" for="admin-category">
+              <span>Category</span>
+              <select id="admin-category" v-model="adminCategoryId" @change="selectAdminCategory">
+                <option v-for="category in categories" :key="category.id" :value="category.id">{{ category.name }}</option>
+              </select>
+            </label>
+            <label class="admin-field" for="admin-clue">
+              <span>Clue value</span>
+              <select id="admin-clue" v-model="adminClueValue" @change="adminMessage = ''">
+                <option v-for="clue in adminSelectedClue ? adminSelectedClue.category.clues : []" :key="clue.value" :value="String(clue.value)">
+                  {{ clue.value }} points
+                </option>
+              </select>
+            </label>
+          </div>
+          <div v-if="adminSelectedClue" class="admin-clue-details">
+            <p><strong>{{ adminSelectedClue.category.name }} · {{ adminSelectedClue.clue.value }} points</strong>{{ adminSelectedClue.clue.prompt }}</p>
+            <span :class="adminSelectedCluePlayed ? 'admin-clue-played' : 'admin-clue-available'">
+              {{ adminSelectedCluePlayed ? `Played · ${played[clueKey(adminSelectedClue.category, adminSelectedClue.clue)]}` : 'Available' }}
+            </span>
+          </div>
+          <div class="admin-clue-actions">
+            <button class="admin-save-button" type="button" :disabled="!adminSelectedCluePlayed" @click="reenableSelectedClue">
+              Re-enable selected clue
+            </button>
+            <button class="admin-secondary-button" type="button" :disabled="remainingClues === totalClueCount" @click="reenableAllClues">
+              Re-enable all clues
+            </button>
+          </div>
+        </section>
         <p v-if="adminMessage" class="admin-message" role="status" aria-live="polite">{{ adminMessage }}</p>
       </div>
     </dialog>

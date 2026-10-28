@@ -188,6 +188,8 @@ const selectedClue = ref<SelectedClue>(null)
 const showAnswer = ref(false)
 const reviewMode = ref(false)
 const dialogRef = ref<HTMLDialogElement | null>(null)
+const frameViewerDialogRef = ref<HTMLDialogElement | null>(null)
+const selectedFrameIndex = ref(0)
 const showAddTeamForm = ref(false)
 const newTeamName = ref('')
 const teamFormError = ref('')
@@ -204,13 +206,42 @@ const specialOutcome = ref<'correct' | 'missed' | null>(null)
 
 const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)')
 const prefersReducedMotion = ref(motionPreference.matches)
+const sceneMediaRef = ref<HTMLElement | null>(null)
+const isSceneFullscreen = ref(false)
+const fullscreenError = ref('')
 
 function updateReducedMotion(event: MediaQueryListEvent): void {
   prefersReducedMotion.value = event.matches
 }
 
-onMounted(() => motionPreference.addEventListener('change', updateReducedMotion))
-onUnmounted(() => motionPreference.removeEventListener('change', updateReducedMotion))
+function updateFullscreenState(): void {
+  isSceneFullscreen.value = document.fullscreenElement === sceneMediaRef.value
+}
+
+async function toggleSceneFullscreen(): Promise<void> {
+  const scene = sceneMediaRef.value
+  if (!scene) return
+  fullscreenError.value = ''
+
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen()
+      return
+    }
+    await scene.requestFullscreen()
+  } catch {
+    fullscreenError.value = 'Fullscreen is unavailable in this browser.'
+  }
+}
+
+onMounted(() => {
+  motionPreference.addEventListener('change', updateReducedMotion)
+  document.addEventListener('fullscreenchange', updateFullscreenState)
+})
+onUnmounted(() => {
+  motionPreference.removeEventListener('change', updateReducedMotion)
+  document.removeEventListener('fullscreenchange', updateFullscreenState)
+})
 
 function persistGame(): void {
   try {
@@ -299,6 +330,11 @@ const currentSpecialReward = computed(() => {
   return Math.max(0, clue.value - (revealStage.value - 1) * SPECIAL_REVEAL_PENALTY)
 })
 const currentZoomScale = computed(() => specialOutcome.value || reviewMode.value ? 1 : [4.5, 3.3, 2.4, 1.6, 1][revealStage.value - 1] ?? 1)
+const frameViewerCount = computed(() => {
+  const clue = selectedClue.value?.clue
+  if (clue?.mode !== 'frames') return 0
+  return reviewMode.value || specialOutcome.value ? clue.frames.length : revealStage.value
+})
 const remainingClues = computed(() => categories.reduce(
   (count, category) => count + category.clues.filter((clue) => !played.value[clueKey(category, clue)]).length,
   0,
@@ -387,6 +423,7 @@ function addTeam(): void {
 
 function openClue(category: Category, clue: Clue): void {
   const status = played.value[clueKey(category, clue)]
+  selectedFrameIndex.value = 0
   selectedClue.value = { category, clue }
   reviewMode.value = Boolean(status)
   showAnswer.value = reviewMode.value
@@ -397,6 +434,7 @@ function openClue(category: Category, clue: Clue): void {
 }
 
 function closeClue(): void {
+  if (frameViewerDialogRef.value?.open) frameViewerDialogRef.value.close()
   selectedClue.value = null
   showAnswer.value = false
   reviewMode.value = false
@@ -404,6 +442,33 @@ function closeClue(): void {
   specialGuess.value = ''
   specialFeedback.value = ''
   specialOutcome.value = null
+}
+
+function openFrameViewer(index: number): void {
+  const clue = selectedClue.value?.clue
+  if (clue?.mode !== 'frames' || index < 0 || index >= frameViewerCount.value) return
+  selectedFrameIndex.value = index
+  frameViewerDialogRef.value?.showModal()
+}
+
+function openCostumeViewer(): void {
+  if (selectedClue.value?.clue.mode !== 'zoom') return
+  frameViewerDialogRef.value?.showModal()
+}
+
+function stepFrame(direction: -1 | 1): void {
+  const clue = selectedClue.value?.clue
+  const frameCount = frameViewerCount.value
+  if (clue?.mode !== 'frames' || frameCount < 2) return
+  selectedFrameIndex.value = (selectedFrameIndex.value + direction + frameCount) % frameCount
+}
+
+function closeFrameViewer(): void {
+  if (frameViewerDialogRef.value?.open) frameViewerDialogRef.value.close()
+}
+
+function onFrameViewerClose(): void {
+  selectedFrameIndex.value = 0
 }
 
 function normalizeAnswer(value: string): string {
@@ -487,6 +552,7 @@ watch(selectedClue, (selected) => {
   <div class="skeleton-backdrop" aria-hidden="true">
     <video
       v-if="!prefersReducedMotion"
+      ref="sceneMediaRef"
       class="skeleton-scene"
       autoplay
       muted
@@ -494,10 +560,19 @@ watch(selectedClue, (selected) => {
       playsinline
       preload="auto"
       poster="/skeleton-rave.webp"
+      @click="toggleSceneFullscreen"
     >
       <source src="/skeleton-rave-loop.mp4" type="video/mp4" />
     </video>
-    <img v-else class="skeleton-scene" src="/skeleton-rave.webp" alt="" draggable="false" />
+    <img
+      v-else
+      ref="sceneMediaRef"
+      class="skeleton-scene"
+      src="/skeleton-rave.webp"
+      alt=""
+      draggable="false"
+      @click="toggleSceneFullscreen"
+    />
   </div>
 
   <main class="app-shell">
@@ -506,8 +581,19 @@ watch(selectedClue, (selected) => {
         <span class="wordmark-icon" aria-hidden="true">✦</span>
         <span>MIDNIGHT <b>QUIZ CLUB</b></span>
       </a>
+      <button
+        class="fullscreen-toggle"
+        type="button"
+        :aria-label="isSceneFullscreen ? 'Exit fullscreen skeleton scene' : 'View skeleton scene fullscreen'"
+        :aria-pressed="isSceneFullscreen"
+        title="Toggle fullscreen skeleton scene"
+        @click="toggleSceneFullscreen"
+      >
+        <span aria-hidden="true">{{ isSceneFullscreen ? '⤢' : '⛶' }}</span>
+      </button>
       <div class="game-status"><span class="status-dot" aria-hidden="true"></span> GAME NIGHT</div>
     </header>
+    <p v-if="fullscreenError" class="fullscreen-error" role="status">{{ fullscreenError }}</p>
 
     <section id="top" class="hero" aria-labelledby="game-title">
       <div class="hero-copy">
@@ -679,16 +765,28 @@ watch(selectedClue, (selected) => {
           <p v-if="!specialOutcome && !reviewMode" class="special-rules">Every extra {{ selectedClue.clue.mode === 'frames' ? 'frame' : 'reveal' }} costs {{ SPECIAL_REVEAL_PENALTY }} points.</p>
           <p v-else-if="selectedClue.clue.mode === 'frames' && !reviewMode" class="special-rules">Scroll through all five frames below.</p>
 
-          <div v-if="selectedClue.clue.mode === 'frames' && !specialOutcome && !reviewMode" class="special-media-frame movie-frame">
+          <button
+            v-if="selectedClue.clue.mode === 'frames' && !specialOutcome && !reviewMode"
+            class="special-media-frame movie-frame movie-frame-button"
+            type="button"
+            :aria-label="`Enlarge current frame ${revealStage}`"
+            @click="openFrameViewer(revealStage - 1)"
+          >
             <img :src="selectedClue.clue.frames[revealStage - 1]" :alt="`Movie scene clue, frame ${revealStage}`" />
-          </div>
-          <div v-else-if="selectedClue.clue.mode === 'zoom'" class="special-media-frame costume-zoom">
+          </button>
+          <button
+            v-else-if="selectedClue.clue.mode === 'zoom'"
+            class="special-media-frame costume-zoom costume-zoom-button"
+            type="button"
+            aria-label="Enlarge costume image"
+            @click="openCostumeViewer"
+          >
             <img
               :src="selectedClue.clue.image"
               :style="{ transform: `scale(${currentZoomScale})` }"
               alt="Zoomed-in costume clue"
             />
-          </div>
+          </button>
 
           <form v-if="!specialOutcome && !reviewMode" class="special-guess-form" @submit.prevent="submitSpecialGuess">
             <label for="special-guess">{{ selectedClue.clue.mode === 'frames' ? 'Guess the movie' : 'Guess the costume or character' }}</label>
@@ -726,11 +824,79 @@ watch(selectedClue, (selected) => {
             tabindex="0"
           >
             <figure v-for="(frame, index) in selectedClue.clue.frames" :key="frame" class="postgame-frame">
-              <img :src="frame" :alt="`Frame ${index + 1} from ${selectedClue.clue.answer}`" />
-              <figcaption>Frame {{ index + 1 }}</figcaption>
+              <button
+                class="postgame-frame-button"
+                type="button"
+                :aria-label="`Open frame ${index + 1} enlarged`"
+                @click="openFrameViewer(index)"
+              >
+                <img :src="frame" :alt="`Frame ${index + 1} from ${selectedClue.clue.answer}`" />
+                <span class="postgame-frame-caption">Frame {{ index + 1 }} · Enlarge</span>
+              </button>
             </figure>
           </div>
         </section>
+      </div>
+    </dialog>
+
+    <dialog
+      ref="frameViewerDialogRef"
+      class="frame-viewer-dialog"
+      aria-labelledby="frame-viewer-title"
+      @click.self="closeFrameViewer"
+      @close="onFrameViewerClose"
+      @keydown.left.stop.prevent="stepFrame(-1)"
+      @keydown.right.stop.prevent="stepFrame(1)"
+    >
+      <div v-if="selectedClue && selectedClue.clue.mode" class="frame-viewer-content">
+        <button class="dialog-close" type="button" aria-label="Close image viewer" autofocus @click="closeFrameViewer">×</button>
+        <h2 id="frame-viewer-title" class="frame-viewer-title">
+          <template v-if="selectedClue.clue.mode === 'frames'">
+            {{ reviewMode || specialOutcome ? selectedClue.clue.answer : `Frame ${selectedFrameIndex + 1}` }}
+          </template>
+          <template v-else>
+            {{ reviewMode || specialOutcome ? selectedClue.clue.answer : `Costume · Reveal ${revealStage} of ${SPECIAL_REVEAL_COUNT}` }}
+          </template>
+        </h2>
+        <div v-if="selectedClue.clue.mode === 'frames'" class="frame-viewer-stage">
+          <button v-if="frameViewerCount > 1" class="frame-viewer-nav frame-viewer-nav-previous" type="button" aria-label="Previous frame" @click="stepFrame(-1)">‹</button>
+          <img
+            :src="selectedClue.clue.frames[selectedFrameIndex]"
+            :alt="reviewMode || specialOutcome ? `Frame ${selectedFrameIndex + 1} from ${selectedClue.clue.answer}` : `Frame ${selectedFrameIndex + 1}`"
+          />
+          <button v-if="frameViewerCount > 1" class="frame-viewer-nav frame-viewer-nav-next" type="button" aria-label="Next frame" @click="stepFrame(1)">›</button>
+        </div>
+        <div v-else class="frame-viewer-costume">
+          <img
+            :src="selectedClue.clue.image"
+            :style="{ transform: `scale(${currentZoomScale})` }"
+            :alt="reviewMode || specialOutcome ? `${selectedClue.clue.answer} costume` : `Costume clue at reveal ${revealStage}`"
+          />
+        </div>
+        <p class="frame-viewer-count">
+          <template v-if="selectedClue.clue.mode === 'frames'">
+            <template v-if="reviewMode || specialOutcome">Frame {{ selectedFrameIndex + 1 }} of {{ frameViewerCount }} · Use arrow keys to browse</template>
+            <template v-else>Frame {{ selectedFrameIndex + 1 }} · revealed so far</template>
+          </template>
+          <template v-else>
+            <template v-if="reviewMode || specialOutcome">Full costume</template>
+            <template v-else>Current reveal {{ revealStage }} of {{ SPECIAL_REVEAL_COUNT }} · no penalty</template>
+          </template>
+        </p>
+        <div v-if="selectedClue.clue.mode === 'frames' && frameViewerCount > 1" class="frame-viewer-index">
+          <button
+            v-for="index in frameViewerCount"
+            :key="index"
+            class="frame-index-button"
+            :class="{ 'frame-index-current': selectedFrameIndex === index - 1 }"
+            type="button"
+            :aria-label="`View frame ${index}`"
+            :aria-current="selectedFrameIndex === index - 1 ? 'step' : undefined"
+            @click="selectedFrameIndex = index - 1"
+          >
+            {{ index }}
+          </button>
+        </div>
       </div>
     </dialog>
 

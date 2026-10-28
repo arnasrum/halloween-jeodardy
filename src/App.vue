@@ -1,23 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { CONFIG_STORAGE_KEY, createDefaultGameConfig, parseGameConfig } from './gameConfig'
+import type { Category, Clue, GameConfig } from './gameConfig'
+import {
+  isEmbeddedImageReference,
+  isMediaAssetReference,
+  mediaAssetAsDataUrl,
+  pruneUnusedMediaAssets,
+  readMediaAsset,
+  storeMediaAsset,
+  storeEmbeddedImage,
+} from './mediaStore'
 
-type ClueBase = {
-  value: number
-  prompt: string
-  answer: string
-}
-
-type Clue =
-  | (ClueBase & { mode?: undefined })
-  | (ClueBase & { mode: 'frames'; acceptedAnswers: string[]; frames: string[] })
-  | (ClueBase & { mode: 'zoom'; acceptedAnswers: string[]; image: string })
-
-type Category = {
-  id: string
-  name: string
-  icon: string
-  clues: Clue[]
-}
 
 type SelectedClue = {
   category: Category
@@ -30,11 +24,6 @@ type Team = {
   score: number
 }
 
-type SavedGame = {
-teams: Team[]
-  activeTeamIndex: number
-  played: Record<string, PlayedStatus>
-}
 
 const SAVE_KEY = 'halloween-jeopardy:save:v2'
 const LEGACY_SAVE_KEY = 'halloween-jeopardy:save:v1'
@@ -42,140 +31,19 @@ const LEGACY_SAVE_KEY = 'halloween-jeopardy:save:v1'
 const SPECIAL_REVEAL_COUNT = 5
 const SPECIAL_REVEAL_PENALTY = 100
 
-function createFrameClue(value: number, answer: string, slug: string, acceptedAnswers: string[]): Extract<Clue, { mode: 'frames' }> {
-  return {
-    mode: 'frames',
-    value,
-    prompt: 'Name the movie from its frames.',
-    answer,
-    acceptedAnswers,
-    frames: Array.from({ length: SPECIAL_REVEAL_COUNT }, (_, index) => `/mini-games/movies/${slug}/frame-${index + 1}.webp`),
+const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
+const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+
+function loadSavedConfiguration(): GameConfig {
+  try {
+    const raw = window.localStorage.getItem(CONFIG_STORAGE_KEY)
+    return raw ? parseGameConfig(JSON.parse(raw)) : createDefaultGameConfig()
+  } catch {
+    return createDefaultGameConfig()
   }
 }
 
-const categories: Category[] = [
-  {
-    id: 'monsters',
-    name: 'Monsters & Myths',
-    icon: '🦇',
-    clues: [
-      { value: 100, prompt: 'Folklore says this wolf-like creature transforms under a full moon.', answer: 'A werewolf' },
-      { value: 200, prompt: 'This legendary sea monster is also the name of a giant squid in fiction.', answer: 'The Kraken' },
-      { value: 300, prompt: 'This one-eyed giant from Greek mythology has a name meaning “round eye.”', answer: 'A Cyclops' },
-      { value: 400, prompt: 'In legend, this sea creature lures sailors with an enchanting song.', answer: 'A siren' },
-      { value: 500, prompt: 'This ghost ship is doomed to sail the seas forever.', answer: 'The Flying Dutchman' },
-    ],
-  },
-  {
-    id: 'movie-monsters',
-    name: 'Famous Frights',
-    icon: '🎬',
-    clues: [
-      { value: 100, prompt: 'In the 1984 comedy, this team catches ghosts in New York City.', answer: 'The Ghostbusters' },
-      { value: 200, prompt: 'This masked slasher haunts Haddonfield in the Halloween film series.', answer: 'Michael Myers' },
-      { value: 300, prompt: 'Boris Karloff played this stitched-together creature in the 1931 film.', answer: 'Frankenstein’s monster' },
-      { value: 400, prompt: 'This haunted doll is kept in a glass case in a popular horror franchise.', answer: 'Annabelle' },
-      { value: 500, prompt: 'This 1975 shark thriller made many moviegoers wary of the ocean.', answer: 'Jaws' },
-    ],
-  },
-  {
-    id: 'trick-or-treat',
-    name: 'Trick or Treat',
-    icon: '🎃',
-    clues: [
-      { value: 100, prompt: 'A carved pumpkin lantern goes by this name.', answer: 'A jack-o’-lantern' },
-      { value: 200, prompt: 'The two-word phrase shouted at the door to ask for Halloween candy.', answer: 'Trick or treat' },
-      { value: 300, prompt: 'This orange gourd is the classic canvas for a jack-o’-lantern.', answer: 'A pumpkin' },
-      { value: 400, prompt: 'This sticky autumn treat coats a crisp apple.', answer: 'Caramel (or toffee)' },
-      { value: 500, prompt: 'This ancient Celtic festival is commonly linked to Halloween’s origins.', answer: 'Samhain' },
-    ],
-  },
-  {
-    id: 'spooky-science',
-    name: 'Spooky Science',
-    icon: '🧪',
-    clues: [
-      { value: 100, prompt: 'This force keeps your feet on the floor and makes a dropped potion fall.', answer: 'Gravity' },
-      { value: 200, prompt: 'This ground-hugging cloud forms when tiny water droplets hang in the air.', answer: 'Fog' },
-      { value: 300, prompt: 'This orange pigment helps give pumpkins their color.', answer: 'Beta-carotene' },
-      { value: 400, prompt: 'Fireflies make their light through this natural chemical process.', answer: 'Bioluminescence' },
-      { value: 500, prompt: 'A full moon to full moon cycle takes about this many days.', answer: '29.5 days' },
-    ],
-  },
-  {
-    id: 'witch-workshop',
-    name: 'Witch’s Workshop',
-    icon: '🕯️',
-    clues: [
-      { value: 100, prompt: 'A witch’s classic pointy hat pairs with this flying ride.', answer: 'A broomstick' },
-      { value: 200, prompt: 'This pungent bulb is said to ward off vampires.', answer: 'Garlic' },
-      { value: 300, prompt: 'A witch stirs bubbling potions in this large vessel.', answer: 'A cauldron' },
-      { value: 400, prompt: 'Complete the famous magic word: “Abra-...”', answer: '...cadabra!' },
-      { value: 500, prompt: 'This word describes an object believed to bring luck or protection.', answer: 'A talisman' },
-    ],
-  },
-
-  {
-    id: 'movie-frames',
-    name: 'Guess by Frame',
-    icon: '🎞️',
-    clues: [
-      createFrameClue(100, 'Night of the Living Dead', 'night-of-the-living-dead', ['Night of the Living Dead (1968)', 'Night of the Living Dead 1968', 'NOTLD']),
-      createFrameClue(200, 'Nosferatu', 'nosferatu', ['Nosferatu (1922)', 'Nosferatu: A Symphony of Horror', 'Nosferatu, eine Symphonie des Grauens', 'A Symphony of Horror']),
-      createFrameClue(300, 'The Golem', 'the-golem', ['The Golem (1920)', 'The Golem: How He Came into the World', 'Der Golem, wie er in die Welt kam']),
-      createFrameClue(400, 'The Screaming Skull', 'the-screaming-skull', ['The Screaming Skull (1958)', 'Screaming Skull']),
-      createFrameClue(500, 'The Hideous Sun Demon', 'the-hideous-sun-demon', ['The Hideous Sun Demon (1958)']),
-    ],
-  },
-
-  {
-    id: 'costume-zoom',
-    name: 'Zoomed-In Costumes',
-    icon: '🔎',
-    clues: [
-      {
-        mode: 'zoom',
-        value: 100,
-        prompt: 'Name this classic Halloween costume.',
-        answer: 'Witch',
-        acceptedAnswers: ['witch costume', 'witch outfit'],
-        image: '/mini-games/costumes/witch.svg',
-      },
-      {
-        mode: 'zoom',
-        value: 200,
-        prompt: 'Name this classic Halloween costume.',
-        answer: 'Vampire',
-        acceptedAnswers: ['vampire costume', 'Dracula'],
-        image: '/mini-games/costumes/vampire.svg',
-      },
-      {
-        mode: 'zoom',
-        value: 300,
-        prompt: 'Name this classic Halloween costume.',
-        answer: 'Mummy',
-        acceptedAnswers: ['mummy costume', 'wrapped mummy'],
-        image: '/mini-games/costumes/mummy.svg',
-      },
-      {
-        mode: 'zoom',
-        value: 400,
-        prompt: 'Name this classic Halloween costume.',
-        answer: 'Werewolf',
-        acceptedAnswers: ['werewolf costume', 'wolfman', 'wolf man'],
-        image: '/mini-games/costumes/werewolf.svg',
-      },
-      {
-        mode: 'zoom',
-        value: 500,
-        prompt: 'Name this classic Halloween costume.',
-        answer: 'Skeleton',
-        acceptedAnswers: ['skeleton costume', 'skull costume'],
-        image: '/mini-games/costumes/skeleton.svg',
-      },
-    ],
-  },
-]
+const categories = ref(loadSavedConfiguration().categories)
 
 const defaultTeams: Team[] = [
   { name: 'Team Moonlight', score: 0 },
@@ -191,14 +59,30 @@ const dialogRef = ref<HTMLDialogElement | null>(null)
 const frameViewerDialogRef = ref<HTMLDialogElement | null>(null)
 const selectedFrameIndex = ref(0)
 const newTeamName = ref('')
-const adminDialogRef = ref<HTMLDialogElement | null>(null)
+const isAdminPage = ref(window.location.pathname.replace(/\/+$/, '') === '/admin')
+const adminSection = ref<'teams' | 'clues' | 'content'>('teams')
+const adminReturnPath = ref('/')
 const adminTeamIndex = ref(0)
 const adminTeamName = ref('')
 const adminTeamScore = ref('0')
 const adminPoints = ref('100')
 const adminMessage = ref('')
-const adminCategoryId = ref(categories[0]?.id ?? '')
-const adminClueValue = ref(String(categories[0]?.clues[0]?.value ?? ''))
+const configFileInputRef = ref<HTMLInputElement | null>(null)
+const mediaSourceUrls = ref<Record<string, string>>({})
+const mediaError = ref('')
+const configCategoryId = ref(categories.value[0]?.id ?? '')
+const configCategoryName = ref('')
+const configCategoryIcon = ref('')
+const newCategoryName = ref('')
+const newCategoryIcon = ref('👻')
+const configClueIndex = ref(-1)
+const configClueValue = ref('100')
+const configCluePrompt = ref('')
+const configClueAnswer = ref('')
+const configAcceptedAnswers = ref('')
+const configClueMode = ref<'standard' | 'frames' | 'zoom'>('standard')
+const adminCategoryId = ref(categories.value[0]?.id ?? '')
+const adminClueValue = ref(String(categories.value[0]?.clues[0]?.value ?? ''))
 const revealStage = ref(1)
 const specialGuess = ref('')
 const specialFeedback = ref('')
@@ -237,11 +121,99 @@ async function toggleSceneFullscreen(): Promise<void> {
 onMounted(() => {
   motionPreference.addEventListener('change', updateReducedMotion)
   document.addEventListener('fullscreenchange', updateFullscreenState)
+  window.addEventListener('popstate', syncAdminRoute)
+  if (isAdminPage.value) prepareAdminPage()
+  void refreshMediaSources()
 })
 onUnmounted(() => {
   motionPreference.removeEventListener('change', updateReducedMotion)
   document.removeEventListener('fullscreenchange', updateFullscreenState)
+  window.removeEventListener('popstate', syncAdminRoute)
+  for (const url of Object.values(mediaSourceUrls.value)) URL.revokeObjectURL(url)
 })
+
+function collectMediaReferences(categoryList: Category[] = categories.value): string[] {
+  const references: string[] = []
+  for (const category of categoryList) {
+    for (const clue of category.clues) {
+      if (clue.mode === 'frames') references.push(...clue.frames)
+      else if (clue.mode === 'zoom') references.push(clue.image)
+    }
+  }
+  return references
+}
+
+function imageSource(reference: string): string {
+  return mediaSourceUrls.value[reference] ?? reference
+}
+
+async function refreshMediaSources(): Promise<void> {
+  const references = [...new Set(collectMediaReferences(categories.value).filter(isMediaAssetReference))]
+  const nextSources: Record<string, string> = {}
+  const missing: string[] = []
+
+  try {
+    await Promise.all(references.map(async (reference) => {
+      const blob = await readMediaAsset(reference)
+      if (blob) nextSources[reference] = URL.createObjectURL(blob)
+      else missing.push(reference)
+    }))
+  } catch {
+    for (const url of Object.values(mediaSourceUrls.value)) URL.revokeObjectURL(url)
+    mediaSourceUrls.value = {}
+    mediaError.value = 'Could not load uploaded images from this browser.'
+    return
+  }
+
+  for (const url of Object.values(mediaSourceUrls.value)) URL.revokeObjectURL(url)
+  mediaSourceUrls.value = nextSources
+  mediaError.value = missing.length
+    ? `${missing.length} uploaded image${missing.length === 1 ? '' : 's'} missing from this browser. Import a full config export or upload replacements.`
+    : ''
+}
+
+async function optimizeUploadedImage(file: File): Promise<Blob> {
+  const bitmap = await createImageBitmap(file)
+  try {
+    const scale = Math.min(1, 1920 / Math.max(bitmap.width, bitmap.height))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('Could not prepare this image in the browser.')
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob)
+        else reject(new Error('Could not encode this image as WebP.'))
+      }, 'image/webp', 0.84)
+    })
+  } finally {
+    bitmap.close()
+  }
+}
+
+async function storeEmbeddedMedia(configuration: GameConfig): Promise<GameConfig> {
+  for (const category of configuration.categories) {
+    for (const clue of category.clues) {
+      if (clue.mode === 'frames') {
+        for (let index = 0; index < clue.frames.length; index += 1) {
+          const source = clue.frames[index]
+          if (source && isEmbeddedImageReference(source)) clue.frames[index] = await storeEmbeddedImage(source)
+        }
+      } else if (clue.mode === 'zoom' && isEmbeddedImageReference(clue.image)) {
+        clue.image = await storeEmbeddedImage(clue.image)
+      }
+    }
+  }
+  return parseGameConfig(configuration)
+}
+
+function pruneStoredMedia(): void {
+  void pruneUnusedMediaAssets(collectMediaReferences()).catch(() => {
+    mediaError.value = 'Could not clean up unused uploaded images in this browser.'
+  })
+}
 
 function persistGame(): void {
   try {
@@ -253,6 +225,28 @@ function persistGame(): void {
   } catch {
     // The game remains playable when browser storage is unavailable.
   }
+}
+
+function persistConfiguration(): boolean {
+  try {
+    window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify({ version: 1, categories: categories.value }))
+    return true
+  } catch {
+    return false
+  }
+}
+
+function prunePlayedClues(): void {
+  const validKeys = new Set<string>()
+  for (const category of categories.value) {
+    for (const clue of category.clues) validKeys.add(clueKey(category, clue))
+  }
+
+  const remainingPlayed: Record<string, PlayedStatus> = {}
+  for (const [key, status] of Object.entries(played.value)) {
+    if (validKeys.has(key)) remainingPlayed[key] = status
+  }
+  played.value = remainingPlayed
 }
 
 function isSavedTeam(value: unknown): value is Team {
@@ -305,7 +299,7 @@ function restoreGame(): void {
     activeTeamIndex.value = savedActiveTeam
 
     const restoredPlayed: Record<string, PlayedStatus> = {}
-    for (const category of categories) {
+    for (const category of categories.value) {
       for (const clue of category.clues) {
         const key = clueKey(category, clue)
         const status = (savedPlayed as Record<string, unknown>)[key]
@@ -323,9 +317,14 @@ restoreGame()
 
 const currentTeam = computed(() => teams.value[activeTeamIndex.value])
 
-const totalClueCount = categories.reduce((total, category) => total + category.clues.length, 0)
+const totalClueCount = computed(() => categories.value.reduce((total, category) => total + category.clues.length, 0))
+const configCategory = computed(() => categories.value.find((item) => item.id === configCategoryId.value) ?? null)
+const configSelectedClue = computed(() => {
+  const category = configCategory.value
+  return category ? category.clues[configClueIndex.value] ?? null : null
+})
 const adminSelectedClue = computed(() => {
-  const category = categories.find((item) => item.id === adminCategoryId.value)
+  const category = categories.value.find((item) => item.id === adminCategoryId.value)
   const clue = category?.clues.find((item) => String(item.value) === adminClueValue.value)
   return category && clue ? { category, clue } : null
 })
@@ -344,7 +343,7 @@ const frameViewerCount = computed(() => {
   if (clue?.mode !== 'frames') return 0
   return reviewMode.value || specialOutcome.value ? clue.frames.length : revealStage.value
 })
-const remainingClues = computed(() => categories.reduce(
+const remainingClues = computed(() => categories.value.reduce(
   (count, category) => count + category.clues.filter((clue) => !played.value[clueKey(category, clue)]).length,
   0,
 ))
@@ -371,18 +370,38 @@ function loadAdminTeam(index: number): void {
   adminMessage.value = ''
 }
 
-function openAdminPanel(): void {
+function prepareAdminPage(): void {
   loadAdminTeam(activeTeamIndex.value)
   adminPoints.value = '100'
   newTeamName.value = ''
-  adminCategoryId.value = categories[0]?.id ?? ''
-  adminClueValue.value = String(categories[0]?.clues[0]?.value ?? '')
+  const firstCategory = categories.value[0]
+  const editorCategory = categories.value.find((category) => category.id === configCategoryId.value) ?? firstCategory
+  if (editorCategory) loadConfigCategory(editorCategory.id)
   adminMessage.value = ''
-  adminDialogRef.value?.showModal()
+  adminSection.value = 'teams'
 }
 
-function closeAdminPanel(): void {
-  if (adminDialogRef.value?.open) adminDialogRef.value.close()
+function openAdminPage(): void {
+  if (!isAdminPage.value) {
+    adminReturnPath.value = window.location.pathname.replace(/\/+$/, '') || '/'
+    window.history.pushState({ view: 'admin' }, '', '/admin')
+  }
+  prepareAdminPage()
+  isAdminPage.value = true
+  window.scrollTo(0, 0)
+}
+
+function closeAdminPage(): void {
+  if (!isAdminPage.value) return
+  window.history.replaceState({}, '', adminReturnPath.value || '/')
+  isAdminPage.value = false
+  window.scrollTo(0, 0)
+}
+
+function syncAdminRoute(): void {
+  const nextAdminPage = window.location.pathname.replace(/\/+$/, '') === '/admin'
+  if (nextAdminPage && !isAdminPage.value) prepareAdminPage()
+  isAdminPage.value = nextAdminPage
 }
 
 function selectAdminTeam(): void {
@@ -491,7 +510,7 @@ function adjustTeamScore(direction: 1 | -1): void {
 }
 
 function selectAdminCategory(): void {
-  const category = categories.find((item) => item.id === adminCategoryId.value)
+  const category = categories.value.find((item) => item.id === adminCategoryId.value)
   adminClueValue.value = String(category?.clues[0]?.value ?? '')
   adminMessage.value = ''
 }
@@ -520,6 +539,368 @@ function reenableAllClues(): void {
   persistGame()
   adminMessage.value = `Re-enabled all ${playedCount} played clues.`
 }
+
+function commitConfigurationChange(message: string): void {
+  prunePlayedClues()
+  const saved = persistConfiguration()
+  persistGame()
+  adminMessage.value = saved
+    ? message
+    : `${message} Export the configuration to keep a copy; browser storage was unavailable.`
+}
+
+function nextAvailableClueValue(category: Category): number {
+  const usedValues = new Set(category.clues.map((clue) => clue.value))
+  let value = 100
+  while (usedValues.has(value)) value += 100
+  return value
+}
+
+function loadConfigCategory(id: string): void {
+  const category = categories.value.find((item) => item.id === id)
+  if (!category) return
+  configCategoryId.value = category.id
+  configCategoryName.value = category.name
+  configCategoryIcon.value = category.icon
+  adminCategoryId.value = category.id
+  loadConfigClue(category.clues.length ? 0 : -1)
+  adminMessage.value = ''
+}
+
+function loadConfigClue(index: number): void {
+  const category = configCategory.value
+  if (!category) return
+  const clue = category.clues[index]
+  configClueIndex.value = clue ? index : -1
+  configClueValue.value = String(clue?.value ?? nextAvailableClueValue(category))
+  configCluePrompt.value = clue?.prompt ?? ''
+  configClueAnswer.value = clue?.answer ?? ''
+  configAcceptedAnswers.value = clue?.mode ? clue.acceptedAnswers.join('\n') : ''
+  configClueMode.value = clue?.mode ?? 'standard'
+  adminClueValue.value = String(clue?.value ?? category.clues[0]?.value ?? '')
+}
+
+function selectConfigCategory(): void {
+  loadConfigCategory(configCategoryId.value)
+}
+
+function selectConfigClue(): void {
+  loadConfigClue(configClueIndex.value)
+}
+
+function saveConfigCategory(): void {
+  const category = configCategory.value
+  const name = configCategoryName.value.trim()
+  const icon = configCategoryIcon.value.trim()
+  if (!category) {
+    adminMessage.value = 'Choose a category first.'
+    return
+  }
+  if (!name || name.length > 48) {
+    adminMessage.value = 'Category names must contain 1–48 characters.'
+    return
+  }
+  if (!icon || icon.length > 16) {
+    adminMessage.value = 'Enter a category icon of 1–16 characters.'
+    return
+  }
+  if (categories.value.some((item) => item.id !== category.id && item.name.toLowerCase() === name.toLowerCase())) {
+    adminMessage.value = 'That category name is already in use.'
+    return
+  }
+
+  category.name = name
+  category.icon = icon
+  commitConfigurationChange(`Saved category “${name}”.`)
+}
+
+function createCategoryId(name: string): string {
+  const base = name.toLowerCase().normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '') || 'category'
+  let id = base
+  let suffix = 2
+  while (categories.value.some((category) => category.id === id)) {
+    id = `${base}-${suffix}`
+    suffix += 1
+  }
+  return id
+}
+
+function addConfigCategory(): void {
+  const name = newCategoryName.value.trim()
+  const icon = newCategoryIcon.value.trim()
+  if (!name || name.length > 48) {
+    adminMessage.value = 'Category names must contain 1–48 characters.'
+    return
+  }
+  if (!icon || icon.length > 16) {
+    adminMessage.value = 'Enter a category icon of 1–16 characters.'
+    return
+  }
+  if (categories.value.some((category) => category.name.toLowerCase() === name.toLowerCase())) {
+    adminMessage.value = 'That category name is already in use.'
+    return
+  }
+
+  const category: Category = { id: createCategoryId(name), name, icon, clues: [] }
+  categories.value.push(category)
+  newCategoryName.value = ''
+  newCategoryIcon.value = '👻'
+  loadConfigCategory(category.id)
+  commitConfigurationChange(`Added category “${name}”. Add clues before starting that column.`)
+}
+
+function removeConfigCategory(): void {
+  const category = configCategory.value
+  if (!category) return
+  if (categories.value.length <= 1) {
+    adminMessage.value = 'At least one category must remain.'
+    return
+  }
+  if (!window.confirm(`Remove “${category.name}” and all of its clues?`)) return
+
+  const index = categories.value.findIndex((item) => item.id === category.id)
+  categories.value.splice(index, 1)
+  loadConfigCategory(categories.value[Math.min(index, categories.value.length - 1)]!.id)
+  commitConfigurationChange(`Removed category “${category.name}”.`)
+  pruneStoredMedia()
+}
+
+function moveConfigCategory(direction: -1 | 1): void {
+  const index = categories.value.findIndex((category) => category.id === configCategoryId.value)
+  const targetIndex = index + direction
+  if (index < 0 || targetIndex < 0 || targetIndex >= categories.value.length) return
+  const [category] = categories.value.splice(index, 1)
+  if (!category) return
+  categories.value.splice(targetIndex, 0, category)
+  commitConfigurationChange(`Moved “${category.name}” ${direction < 0 ? 'earlier' : 'later'}.`)
+}
+
+function startNewConfigClue(): void {
+  const category = configCategory.value
+  if (!category) return
+  configClueIndex.value = -1
+  configClueValue.value = String(nextAvailableClueValue(category))
+  configCluePrompt.value = ''
+  configClueAnswer.value = ''
+  configClueMode.value = 'standard'
+  configAcceptedAnswers.value = ''
+  adminMessage.value = ''
+}
+
+function saveConfigClue(): void {
+  const category = configCategory.value
+  const rawValue = String(configClueValue.value).trim()
+  const value = Number(rawValue)
+  const prompt = configCluePrompt.value.trim()
+  const answer = configClueAnswer.value.trim()
+  const acceptedAnswers = configAcceptedAnswers.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+  if (!category) {
+    adminMessage.value = 'Choose a category first.'
+    return
+  }
+  if (!rawValue || !Number.isSafeInteger(value) || value <= 0) {
+    adminMessage.value = 'Clue values must be positive whole numbers.'
+    return
+  }
+  if (!prompt || prompt.length > 2000) {
+    adminMessage.value = 'Clue prompts must contain 1–2,000 characters.'
+    return
+  }
+  if (!answer || answer.length > 1000) {
+    adminMessage.value = 'Clue answers must contain 1–1,000 characters.'
+    return
+  }
+  if (configClueMode.value !== 'standard' && acceptedAnswers.some((item) => item.length > 200)) {
+    adminMessage.value = 'Each accepted-answer variant must be 200 characters or fewer.'
+    return
+  }
+  if (category.clues.some((clue, index) => index !== configClueIndex.value && clue.value === value)) {
+    adminMessage.value = `A ${value}-point clue already exists in this category.`
+    return
+  }
+
+  const existing = configClueIndex.value >= 0 ? category.clues[configClueIndex.value] : undefined
+  if (configClueIndex.value >= 0 && !existing) return
+
+  let updatedClue: Clue
+  if (configClueMode.value === 'frames') {
+    const frames = existing?.mode === 'frames'
+      ? [...existing.frames]
+      : Array.from({ length: SPECIAL_REVEAL_COUNT }, (_, index) => `/mini-games/uploads/frame-${index + 1}.webp`)
+    updatedClue = { value, prompt, answer, mode: 'frames', acceptedAnswers, frames }
+  } else if (configClueMode.value === 'zoom') {
+    const image = existing?.mode === 'zoom' ? existing.image : '/mini-games/uploads/zoom.webp'
+    updatedClue = { value, prompt, answer, mode: 'zoom', acceptedAnswers, image }
+  } else {
+    updatedClue = { value, prompt, answer }
+  }
+
+  if (existing) category.clues[configClueIndex.value] = updatedClue
+  else category.clues.push(updatedClue)
+  category.clues.sort((left, right) => left.value - right.value)
+  const savedIndex = category.clues.findIndex((clue) => clue.value === value)
+  loadConfigClue(savedIndex)
+  commitConfigurationChange(`Saved the ${value}-point clue in “${category.name}”.`)
+  if (existing && existing.mode !== updatedClue.mode) {
+    pruneStoredMedia()
+    void refreshMediaSources()
+  }
+}
+
+function removeConfigClue(): void {
+  const category = configCategory.value
+  const clue = configSelectedClue.value
+  if (!category || !clue || configClueIndex.value < 0) return
+  if (!window.confirm(`Remove the ${clue.value}-point clue from “${category.name}”?`)) return
+
+  const removedValue = clue.value
+  category.clues.splice(configClueIndex.value, 1)
+  loadConfigClue(Math.min(configClueIndex.value, category.clues.length - 1))
+  commitConfigurationChange(`Removed the ${removedValue}-point clue from “${category.name}”.`)
+  pruneStoredMedia()
+}
+
+
+async function uploadConfigImage(event: Event, frameIndex?: number): Promise<void> {
+  const input = event.currentTarget as HTMLInputElement
+  const file = input.files?.[0]
+  const selected = configSelectedClue.value
+  const categoryId = configCategory.value?.id
+  if (!file || !selected || !categoryId || !selected.mode) return
+
+  if (!ACCEPTED_IMAGE_TYPES.has(file.type.toLowerCase())) {
+    adminMessage.value = 'Choose a PNG, JPEG, or WebP image.'
+    input.value = ''
+    return
+  }
+  if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+    adminMessage.value = 'Images must be 10 MB or smaller.'
+    input.value = ''
+    return
+  }
+
+  let storedReference = ''
+  let previewUrl = ''
+  try {
+    const image = await optimizeUploadedImage(file)
+    storedReference = await storeMediaAsset(image)
+
+    const category = categories.value.find((item) => item.id === categoryId)
+    const clue = category?.clues.find((item) => item.value === selected.value)
+    if (!clue || clue.mode !== selected.mode) throw new Error('The selected clue changed before the upload finished. Try again.')
+
+    let oldReference = ''
+    if (clue.mode === 'frames') {
+      if (frameIndex === undefined || frameIndex < 0 || frameIndex >= clue.frames.length) {
+        throw new Error('Could not find that movie frame slot.')
+      }
+      oldReference = clue.frames[frameIndex] ?? ''
+    } else if (clue.mode === 'zoom' && frameIndex === undefined) {
+      oldReference = clue.image
+    } else {
+      throw new Error('This clue does not have a matching image slot.')
+    }
+
+    previewUrl = URL.createObjectURL(image)
+    if (clue.mode === 'frames' && frameIndex !== undefined) clue.frames[frameIndex] = storedReference
+    else if (clue.mode === 'zoom') clue.image = storedReference
+    mediaSourceUrls.value = { ...mediaSourceUrls.value, [storedReference]: previewUrl }
+    previewUrl = ''
+
+    if (oldReference && isMediaAssetReference(oldReference) && !collectMediaReferences().includes(oldReference)) {
+      const oldUrl = mediaSourceUrls.value[oldReference]
+      if (oldUrl) {
+        URL.revokeObjectURL(oldUrl)
+        const remainingUrls = { ...mediaSourceUrls.value }
+        delete remainingUrls[oldReference]
+        mediaSourceUrls.value = remainingUrls
+      }
+    }
+    mediaError.value = ''
+    const description = clue.mode === 'frames' && frameIndex !== undefined ? `frame ${frameIndex + 1}` : 'zoom image'
+    commitConfigurationChange(`Uploaded ${description} for the ${clue.value}-point clue.`)
+    pruneStoredMedia()
+  } catch (error) {
+    if (previewUrl) URL.revokeObjectURL(previewUrl)
+    if (storedReference) pruneStoredMedia()
+    adminMessage.value = error instanceof Error ? error.message : 'Could not upload that image.'
+  } finally {
+    input.value = ''
+  }
+}
+async function exportConfiguration(): Promise<void> {
+  try {
+    const configuration = parseGameConfig({ version: 1, categories: categories.value })
+    for (const category of configuration.categories) {
+      for (const clue of category.clues) {
+        if (clue.mode === 'frames') {
+          for (let index = 0; index < clue.frames.length; index += 1) {
+            const reference = clue.frames[index]
+            if (reference && isMediaAssetReference(reference)) {
+              clue.frames[index] = await mediaAssetAsDataUrl(reference)
+            }
+          }
+        } else if (clue.mode === 'zoom' && isMediaAssetReference(clue.image)) {
+          clue.image = await mediaAssetAsDataUrl(clue.image)
+        }
+      }
+    }
+
+    const exportable = parseGameConfig(configuration)
+    const blob = new Blob([`${JSON.stringify(exportable, null, 2)}\n`], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const download = document.createElement('a')
+    download.href = url
+    download.download = 'halloween-jeopardy-config.json'
+    document.body.append(download)
+    download.click()
+    download.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    adminMessage.value = 'Exported the board configuration and uploaded images as JSON.'
+  } catch (error) {
+    adminMessage.value = error instanceof Error ? error.message : 'Could not export this configuration.'
+  }
+}
+
+function requestConfigImport(): void {
+  configFileInputRef.value?.click()
+}
+
+async function importConfiguration(event: Event): Promise<void> {
+  const input = event.currentTarget as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const configuration = parseGameConfig(JSON.parse(await file.text()))
+    if (!window.confirm('Replace the current categories and clues? Team names and scores stay; all clues will be re-enabled.')) return
+
+    const imported = await storeEmbeddedMedia(configuration)
+    categories.value = imported.categories
+    played.value = {}
+    const firstCategory = categories.value[0]
+    if (firstCategory) {
+      loadConfigCategory(firstCategory.id)
+      adminCategoryId.value = firstCategory.id
+      adminClueValue.value = String(firstCategory.clues[0]?.value ?? '')
+    }
+    await refreshMediaSources()
+    const saved = persistConfiguration()
+    persistGame()
+    pruneStoredMedia()
+    adminMessage.value = saved
+      ? `Imported ${categories.value.length} categories and ${totalClueCount.value} clues. Team scores were kept.`
+      : 'Imported the board, but browser storage was unavailable. Export the configuration to keep a copy.'
+  } catch (error) {
+    pruneStoredMedia()
+    adminMessage.value = error instanceof Error ? error.message : 'Could not import that configuration.'
+  } finally {
+    input.value = ''
+  }
+}
+
 
 function openClue(category: Category, clue: Clue): void {
   const status = played.value[clueKey(category, clue)]
@@ -649,7 +1030,7 @@ watch(selectedClue, (selected) => {
 </script>
 
 <template>
-  <div class="skeleton-backdrop" aria-hidden="true">
+  <div v-if="!isAdminPage" class="skeleton-backdrop" aria-hidden="true">
     <video
       v-if="!prefersReducedMotion"
       ref="sceneMediaRef"
@@ -675,7 +1056,7 @@ watch(selectedClue, (selected) => {
     />
   </div>
 
-  <main class="app-shell">
+  <main class="app-shell" :class="{ 'app-shell-admin': isAdminPage }">
     <header class="topbar">
       <a class="wordmark" href="#top" aria-label="Midnight Quiz Club home">
         <span class="wordmark-icon" aria-hidden="true">✦</span>
@@ -745,8 +1126,11 @@ watch(selectedClue, (selected) => {
       <p class="board-instruction">It’s <strong>{{ currentTeam.name }}</strong>’s turn. Choose a point value to reveal a clue.</p>
 
       <div class="board-scroll" role="region" aria-label="Jeopardy game board" tabindex="0">
-        <div class="game-board">
-          <article v-for="category in categories" :key="category.id" class="category-column">
+        <div
+          class="game-board"
+          :style="{ '--category-count': categories.length, minWidth: `${Math.max(1120, categories.length * 160)}px` }"
+        >
+          <article v-for="category in categories" :key="category.id" class="category-column" :style="{ '--clue-count': category.clues.length }">
             <h3 class="category-heading">
               <span class="category-icon" aria-hidden="true">{{ category.icon }}</span>
               <span>{{ category.name }}</span>
@@ -772,7 +1156,7 @@ watch(selectedClue, (selected) => {
     <footer class="footer-bar">
       <div class="footer-note"><span aria-hidden="true">✦</span> Play fair. Keep it spooky.</div>
       <div class="footer-actions">
-        <button class="admin-trigger" type="button" @click="openAdminPanel">Admin panel <span aria-hidden="true">⚙</span></button>
+        <a class="admin-trigger" href="/admin" @click.prevent="openAdminPage">Admin <span aria-hidden="true">⚙</span></a>
         <button class="reset-button" type="button" @click="resetGame">Reset game <span aria-hidden="true">↺</span></button>
       </div>
     </footer>
@@ -843,7 +1227,7 @@ watch(selectedClue, (selected) => {
             :aria-label="`Enlarge current frame ${revealStage}`"
             @click="openFrameViewer(revealStage - 1)"
           >
-            <img :src="selectedClue.clue.frames[revealStage - 1]" :alt="`Movie scene clue, frame ${revealStage}`" />
+            <img :src="imageSource(selectedClue.clue.frames[revealStage - 1])" :alt="`Movie scene clue, frame ${revealStage}`" />
           </button>
           <button
             v-else-if="selectedClue.clue.mode === 'zoom'"
@@ -853,7 +1237,7 @@ watch(selectedClue, (selected) => {
             @click="openCostumeViewer"
           >
             <img
-              :src="selectedClue.clue.image"
+              :src="imageSource(selectedClue.clue.image)"
               :style="{ transform: `scale(${currentZoomScale})` }"
               alt="Zoomed-in costume clue"
             />
@@ -901,7 +1285,7 @@ watch(selectedClue, (selected) => {
                 :aria-label="`Open frame ${index + 1} enlarged`"
                 @click="openFrameViewer(index)"
               >
-                <img :src="frame" :alt="`Frame ${index + 1} from ${selectedClue.clue.answer}`" />
+                <img :src="imageSource(frame)" :alt="`Frame ${index + 1} from ${selectedClue.clue.answer}`" />
                 <span class="postgame-frame-caption">Frame {{ index + 1 }} · Enlarge</span>
               </button>
             </figure>
@@ -932,14 +1316,14 @@ watch(selectedClue, (selected) => {
         <div v-if="selectedClue.clue.mode === 'frames'" class="frame-viewer-stage">
           <button v-if="frameViewerCount > 1" class="frame-viewer-nav frame-viewer-nav-previous" type="button" aria-label="Previous frame" @click="stepFrame(-1)">‹</button>
           <img
-            :src="selectedClue.clue.frames[selectedFrameIndex]"
+            :src="imageSource(selectedClue.clue.frames[selectedFrameIndex])"
             :alt="reviewMode || specialOutcome ? `Frame ${selectedFrameIndex + 1} from ${selectedClue.clue.answer}` : `Frame ${selectedFrameIndex + 1}`"
           />
           <button v-if="frameViewerCount > 1" class="frame-viewer-nav frame-viewer-nav-next" type="button" aria-label="Next frame" @click="stepFrame(1)">›</button>
         </div>
         <div v-else class="frame-viewer-costume">
           <img
-            :src="selectedClue.clue.image"
+            :src="imageSource(selectedClue.clue.image)"
             :style="{ transform: `scale(${currentZoomScale})` }"
             :alt="reviewMode || specialOutcome ? `${selectedClue.clue.answer} costume` : `Costume clue at reveal ${revealStage}`"
           />
@@ -971,16 +1355,45 @@ watch(selectedClue, (selected) => {
       </div>
     </dialog>
 
-    <dialog ref="adminDialogRef" class="admin-dialog" aria-labelledby="admin-title" @click.self="closeAdminPanel">
-      <div class="admin-panel-content">
-        <button class="dialog-close" type="button" aria-label="Close admin panel" @click="closeAdminPanel">×</button>
-        <div class="admin-panel-heading">
-          <span class="admin-eyebrow">GAME HOST</span>
-          <h2 id="admin-title">Game admin</h2>
-          <p>Manage teams, scores, and the clue board.</p>
-        </div>
+    <div v-if="isAdminPage" class="admin-page">
+      <div class="admin-page-layout">
+        <header class="admin-page-header">
+          <div class="admin-page-intro">
+            <a class="admin-back-link" href="/" @click.prevent="closeAdminPage">← Back to game</a>
+            <span class="admin-eyebrow">GAME HOST</span>
+            <h1 id="admin-title">Game administration</h1>
+            <p>Manage teams, clue availability, and board content.</p>
+          </div>
+          <div class="admin-page-stats" role="group" aria-label="Current board summary">
+            <div><strong>{{ teams.length }}</strong><span>Teams</span></div>
+            <div><strong>{{ remainingClues }} / {{ totalClueCount }}</strong><span>Clues available</span></div>
+            <div><strong>{{ categories.length }}</strong><span>Categories</span></div>
+          </div>
+        </header>
 
-        <section class="admin-section" aria-labelledby="admin-teams-title">
+        <nav class="admin-nav" aria-label="Administration sections">
+          <button class="admin-nav-item" type="button" :aria-pressed="adminSection === 'teams'" @click="adminSection = 'teams'">
+            <span class="admin-nav-index">01</span>
+            <span class="admin-nav-label">Teams &amp; scores</span>
+            <span class="admin-nav-detail">{{ teams.length }} teams</span>
+          </button>
+          <button class="admin-nav-item" type="button" :aria-pressed="adminSection === 'clues'" @click="adminSection = 'clues'">
+            <span class="admin-nav-index">02</span>
+            <span class="admin-nav-label">Clue availability</span>
+            <span class="admin-nav-detail">{{ totalClueCount - remainingClues }} played</span>
+          </button>
+          <button class="admin-nav-item" type="button" :aria-pressed="adminSection === 'content'" @click="adminSection = 'content'">
+            <span class="admin-nav-index">03</span>
+            <span class="admin-nav-label">Board setup</span>
+            <span class="admin-nav-detail">Categories, clues, media</span>
+          </button>
+        </nav>
+
+        <p v-if="adminMessage" class="admin-message" role="status" aria-live="polite">{{ adminMessage }}</p>
+
+        <div v-if="adminSection === 'teams'" class="admin-page-grid">
+
+        <section class="admin-page-card" aria-labelledby="admin-teams-title">
           <div class="admin-section-heading">
             <h3 id="admin-teams-title">Teams</h3>
             <span>{{ teams.length }} {{ teams.length === 1 ? 'team' : 'teams' }}</span>
@@ -1023,7 +1436,7 @@ watch(selectedClue, (selected) => {
           </form>
         </section>
 
-        <section class="admin-section" aria-labelledby="admin-score-title">
+        <section class="admin-page-card" aria-labelledby="admin-score-title">
           <div class="admin-section-heading">
             <h3 id="admin-score-title">Quick score adjustment</h3>
             <span>Selected: {{ teams[adminTeamIndex]?.name ?? 'No team' }}</span>
@@ -1046,7 +1459,8 @@ watch(selectedClue, (selected) => {
           </div>
         </section>
 
-        <section class="admin-section" aria-labelledby="admin-clues-title">
+        </div>
+        <section v-if="adminSection === 'clues'" class="admin-page-card" aria-labelledby="admin-clues-title">
           <div class="admin-section-heading">
             <h3 id="admin-clues-title">Clue board</h3>
             <span>{{ remainingClues }} available · {{ totalClueCount - remainingClues }} played</span>
@@ -1082,8 +1496,149 @@ watch(selectedClue, (selected) => {
             </button>
           </div>
         </section>
-        <p v-if="adminMessage" class="admin-message" role="status" aria-live="polite">{{ adminMessage }}</p>
+
+        <section v-if="adminSection === 'content'" class="admin-page-card" aria-labelledby="admin-config-title">
+          <div class="admin-section-heading">
+            <h3 id="admin-config-title">Board configuration</h3>
+            <span>{{ categories.length }} categories · {{ totalClueCount }} clues</span>
+          </div>
+          <p class="admin-config-note">Configuration is saved in this browser. Export JSON to back it up or move it to another device. Team scores are separate.</p>
+          <div class="admin-config-transfer">
+            <button class="admin-secondary-button" type="button" @click="exportConfiguration">Export config JSON</button>
+            <button class="admin-secondary-button" type="button" @click="requestConfigImport">Import config JSON</button>
+            <input
+              ref="configFileInputRef"
+              class="admin-file-input"
+              type="file"
+              accept="application/json,.json"
+              @change="importConfiguration"
+            />
+          </div>
+          <p class="admin-note">Select a special clue below to upload its five movie frames or zoomed-in picture. Exports bundle uploaded images with the JSON.</p>
+
+          <div class="admin-config-editor">
+            <div class="admin-editor-heading">
+              <h4>Categories and clues</h4>
+              <p>Edit the board, questions, answers, and clue images here.</p>
+            </div>
+            <div class="admin-config-editor-body">
+              <div class="admin-config-category-fields">
+                <label class="admin-field" for="config-category">
+                  <span>Category</span>
+                  <select id="config-category" v-model="configCategoryId" @change="selectConfigCategory">
+                    <option v-for="category in categories" :key="category.id" :value="category.id">{{ category.icon }} {{ category.name }}</option>
+                  </select>
+                </label>
+                <label class="admin-field" for="config-category-name">
+                  <span>Category name</span>
+                  <input id="config-category-name" v-model="configCategoryName" type="text" maxlength="48" @input="adminMessage = ''" />
+                </label>
+                <label class="admin-field" for="config-category-icon">
+                  <span>Category icon</span>
+                  <input id="config-category-icon" v-model="configCategoryIcon" type="text" maxlength="16" @input="adminMessage = ''" />
+                </label>
+              </div>
+              <div class="admin-config-category-actions">
+                <button class="admin-save-button" type="button" @click="saveConfigCategory">Save category</button>
+                <button
+                  class="admin-secondary-button"
+                  type="button"
+                  :disabled="categories.findIndex((category) => category.id === configCategoryId) <= 0"
+                  aria-label="Move category earlier"
+                  @click="moveConfigCategory(-1)"
+                >↑ Earlier</button>
+                <button
+                  class="admin-secondary-button"
+                  type="button"
+                  :disabled="categories.findIndex((category) => category.id === configCategoryId) >= categories.length - 1"
+                  aria-label="Move category later"
+                  @click="moveConfigCategory(1)"
+                >↓ Later</button>
+                <button class="admin-remove-team-button" type="button" :disabled="categories.length <= 1" @click="removeConfigCategory">Remove category</button>
+              </div>
+
+              <form class="admin-config-add-category-form" @submit.prevent="addConfigCategory">
+                <label class="admin-field" for="new-config-category-name">
+                  <span>Add category</span>
+                  <input id="new-config-category-name" v-model="newCategoryName" type="text" maxlength="48" placeholder="Category name" @input="adminMessage = ''" />
+                </label>
+                <label class="admin-field" for="new-config-category-icon">
+                  <span>Icon</span>
+                  <input id="new-config-category-icon" v-model="newCategoryIcon" type="text" maxlength="16" />
+                </label>
+                <button class="admin-secondary-button" type="submit">Add category</button>
+              </form>
+
+              <div v-if="configCategory" class="admin-config-clue-editor">
+                <div class="admin-section-heading">
+                  <h4>Clues in {{ configCategory.name }}</h4>
+                  <button class="admin-secondary-button" type="button" @click="startNewConfigClue">New clue</button>
+                </div>
+                <label v-if="configCategory.clues.length" class="admin-field" for="config-clue">
+                  <span>Select clue to edit</span>
+                  <select id="config-clue" v-model.number="configClueIndex" @change="selectConfigClue">
+                    <option v-for="(clue, index) in configCategory.clues" :key="clue.value" :value="index">
+                      {{ clue.value }} points — {{ clue.prompt.slice(0, 56) }}
+                    </option>
+                  </select>
+                </label>
+                <p v-else class="admin-note">This category has no clues yet. Add one below.</p>
+                <form class="admin-config-clue-form" @submit.prevent="saveConfigClue">
+                  <label class="admin-field" for="config-clue-value">
+                    <span>Point value</span>
+                    <input id="config-clue-value" v-model="configClueValue" type="number" min="1" step="1" inputmode="numeric" @input="adminMessage = ''" />
+                  </label>
+                  <label class="admin-field admin-clue-type-field" for="config-clue-mode">
+                    <span>Clue type</span>
+                    <select id="config-clue-mode" v-model="configClueMode" @change="adminMessage = ''">
+                      <option value="standard">Standard question</option>
+                      <option value="frames">Movie frames · five images</option>
+                      <option value="zoom">Zoomed-in picture</option>
+                    </select>
+                  </label>
+                  <label class="admin-field admin-clue-prompt-field" for="config-clue-prompt">
+                    <span>Question / clue</span>
+                    <textarea id="config-clue-prompt" v-model="configCluePrompt" rows="3" maxlength="2000" @input="adminMessage = ''"></textarea>
+                  </label>
+                  <label class="admin-field admin-clue-answer-field" for="config-clue-answer">
+                    <span>Answer</span>
+                    <textarea id="config-clue-answer" v-model="configClueAnswer" rows="2" maxlength="1000" @input="adminMessage = ''"></textarea>
+                  </label>
+                  <label v-if="configClueMode !== 'standard'" class="admin-field admin-clue-accepted-answers-field" for="config-clue-accepted-answers">
+                    <span>Accepted answers (one per line)</span>
+                    <textarea id="config-clue-accepted-answers" v-model="configAcceptedAnswers" rows="2" maxlength="2000" @input="adminMessage = ''"></textarea>
+                  </label>
+                  <div v-if="configClueMode === 'frames' && configSelectedClue?.mode === 'frames'" class="admin-media-editor admin-media-editor-frames">
+                    <label v-for="(frame, index) in configSelectedClue.frames" :key="`frame-${index}`" class="admin-media-slot">
+                      <span>Frame {{ index + 1 }}</span>
+                      <img :src="imageSource(frame)" :alt="`Preview for movie frame ${index + 1}`" />
+                      <input type="file" accept="image/png,image/jpeg,image/webp" :aria-label="`Upload movie frame ${index + 1}`" @change="uploadConfigImage($event, index)" />
+                    </label>
+                  </div>
+                  <label v-else-if="configClueMode === 'zoom' && configSelectedClue?.mode === 'zoom'" class="admin-media-slot admin-media-slot-zoom">
+                    <span>Zoomed-in picture</span>
+                    <img :src="imageSource(configSelectedClue.image)" alt="Preview of zoomed-in clue image" />
+                    <input type="file" accept="image/png,image/jpeg,image/webp" aria-label="Upload zoomed-in clue picture" @change="uploadConfigImage($event)" />
+                  </label>
+                  <p v-if="configClueMode !== 'standard'" class="admin-note">
+                    {{ configSelectedClue?.mode === configClueMode
+                      ? 'Upload PNG, JPEG, or WebP files up to 10 MB. Images are resized and stored in this browser; JSON exports embed them for transfer.'
+                      : configClueMode === 'frames'
+                        ? 'Save this clue to create its five frame upload slots, then upload one image for each frame.'
+                        : 'Save this clue to create its zoom image upload slot, then upload its picture.' }}
+                  </p>
+                  <p v-if="mediaError" class="admin-note admin-media-error" role="alert">{{ mediaError }}</p>
+                  <div class="admin-config-category-actions">
+                    <button class="admin-save-button" type="submit">{{ configClueIndex < 0 ? 'Add clue' : 'Save clue' }}</button>
+                    <button class="admin-remove-team-button" type="button" :disabled="configClueIndex < 0" @click="removeConfigClue">Remove clue</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </section>
+
       </div>
-    </dialog>
+    </div>
   </main>
 </template>

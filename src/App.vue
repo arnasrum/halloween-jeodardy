@@ -35,7 +35,6 @@ const SAVE_KEY = 'halloween-jeopardy:save:v2'
 const LEGACY_SAVE_KEY = 'halloween-jeopardy:save:v1'
 
 const SPECIAL_REVEAL_COUNT = 5
-const SPECIAL_REVEAL_PENALTY = 100
 
 const MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
 const MAX_AUDIO_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -61,7 +60,10 @@ function loadSavedConfiguration(): GameConfig {
   }
 }
 
-const categories = ref(loadSavedConfiguration().categories)
+const savedConfiguration = loadSavedConfiguration()
+const categories = ref(savedConfiguration.categories)
+const revealPenalty = ref(savedConfiguration.revealPenalty)
+const revealPenaltyInput = ref(String(savedConfiguration.revealPenalty))
 
 const defaultTeams: Team[] = [
   { name: 'Team Moonlight', score: 0 },
@@ -98,12 +100,10 @@ const configClueIndex = ref(-1)
 const configClueValue = ref('100')
 const configCluePrompt = ref('')
 const configClueAnswer = ref('')
-const configAcceptedAnswers = ref('')
 const configClueMode = ref<'standard' | 'frames' | 'zoom' | 'audio'>('standard')
 const adminCategoryId = ref(categories.value[0]?.id ?? '')
 const adminClueValue = ref(String(categories.value[0]?.clues[0]?.value ?? ''))
 const revealStage = ref(1)
-const specialGuess = ref('')
 const specialFeedback = ref('')
 const specialOutcome = ref<'correct' | 'missed' | null>(null)
 
@@ -410,7 +410,7 @@ function persistGame(): void {
 
 function persistConfiguration(): boolean {
   try {
-    window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify({ version: 1, categories: categories.value }))
+    window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify({ version: 1, revealPenalty: revealPenalty.value, categories: categories.value }))
     return true
   } catch {
     return false
@@ -516,7 +516,7 @@ const adminSelectedCluePlayed = computed(() => {
 const currentSpecialReward = computed(() => {
   const clue = selectedClue.value?.clue
   if (!clue?.mode) return 0
-  return Math.max(0, clue.value - (revealStage.value - 1) * SPECIAL_REVEAL_PENALTY)
+  return Math.max(0, clue.value - (revealStage.value - 1) * revealPenalty.value)
 })
 const currentZoomScale = computed(() => specialOutcome.value || reviewMode.value ? 1 : [4.5, 3.3, 2.4, 1.6, 1][revealStage.value - 1] ?? 1)
 const frameViewerCount = computed(() => {
@@ -729,6 +729,22 @@ function commitConfigurationChange(message: string): void {
     ? message
     : `${message} Export the configuration to keep a copy; browser storage was unavailable.`
 }
+function saveRevealPenalty(): void {
+  const rawValue = String(revealPenaltyInput.value).trim()
+  const value = Number(rawValue)
+  if (!rawValue || !Number.isSafeInteger(value) || value < 0) {
+    revealPenaltyInput.value = String(revealPenalty.value)
+    adminMessage.value = 'The reveal penalty must be a non-negative whole number of points.'
+    return
+  }
+
+  revealPenalty.value = value
+  revealPenaltyInput.value = String(value)
+  commitConfigurationChange(value === 0
+    ? 'Set the Frame/Zoom reveal penalty to 0 points (no penalty).'
+    : `Set the Frame/Zoom reveal penalty to ${value} points per incorrect answer.`)
+}
+
 
 function nextAvailableClueValue(category: Category): number {
   const usedValues = new Set(category.clues.map((clue) => clue.value))
@@ -756,7 +772,6 @@ function loadConfigClue(index: number): void {
   configClueValue.value = String(clue?.value ?? nextAvailableClueValue(category))
   configCluePrompt.value = clue?.prompt ?? ''
   configClueAnswer.value = clue?.answer ?? ''
-  configAcceptedAnswers.value = clue?.mode === 'zoom' ? clue.acceptedAnswers.join('\n') : ''
   configClueMode.value = clue?.mode ?? 'standard'
   adminClueValue.value = String(clue?.value ?? category.clues[0]?.value ?? '')
 }
@@ -866,7 +881,6 @@ function startNewConfigClue(): void {
   configCluePrompt.value = ''
   configClueAnswer.value = ''
   configClueMode.value = 'standard'
-  configAcceptedAnswers.value = ''
   adminMessage.value = ''
 }
 
@@ -876,7 +890,6 @@ function saveConfigClue(): void {
   const value = Number(rawValue)
   const prompt = configCluePrompt.value.trim()
   const answer = configClueAnswer.value.trim()
-  const acceptedAnswers = configAcceptedAnswers.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
   if (!category) {
     adminMessage.value = 'Choose a category first.'
     return
@@ -891,10 +904,6 @@ function saveConfigClue(): void {
   }
   if (!answer || answer.length > 1000) {
     adminMessage.value = 'Clue answers must contain 1–1,000 characters.'
-    return
-  }
-  if (configClueMode.value === 'zoom' && acceptedAnswers.some((item) => item.length > 200)) {
-    adminMessage.value = 'Each accepted-answer variant must be 200 characters or fewer.'
     return
   }
   if (category.clues.some((clue, index) => index !== configClueIndex.value && clue.value === value)) {
@@ -913,7 +922,7 @@ function saveConfigClue(): void {
     updatedClue = { value, prompt, answer, mode: 'frames', frames }
   } else if (configClueMode.value === 'zoom') {
     const image = existing?.mode === 'zoom' ? existing.image : '/mini-games/uploads/zoom.webp'
-    updatedClue = { value, prompt, answer, mode: 'zoom', acceptedAnswers, image }
+    updatedClue = { value, prompt, answer, mode: 'zoom', image }
   } else if (configClueMode.value === 'audio') {
     const audio = existing?.mode === 'audio' ? existing.audio : '/mini-games/uploads/sound.mp3'
     updatedClue = { value, prompt, answer, mode: 'audio', audio }
@@ -944,7 +953,7 @@ function removeConfigClue(): void {
 
 async function exportConfiguration(): Promise<void> {
   try {
-    const configuration = parseGameConfig({ version: 1, categories: categories.value })
+    const configuration = parseGameConfig({ version: 1, revealPenalty: revealPenalty.value, categories: categories.value })
     for (const category of configuration.categories) {
       for (const clue of category.clues) {
         if (clue.mode === 'frames') {
@@ -988,9 +997,11 @@ async function importConfiguration(event: Event): Promise<void> {
   if (!file) return
   try {
     const configuration = parseGameConfig(JSON.parse(await file.text()))
-    if (!window.confirm('Replace the current categories and clues? Team names and scores stay; all clues will be re-enabled.')) return
+    if (!window.confirm('Replace the current categories, clues, and reveal penalty? Team names and scores stay; all clues will be re-enabled.')) return
 
     const imported = await storeEmbeddedMedia(configuration)
+    revealPenalty.value = imported.revealPenalty
+    revealPenaltyInput.value = String(imported.revealPenalty)
     categories.value = imported.categories
     played.value = {}
     const firstCategory = categories.value[0]
@@ -1020,7 +1031,6 @@ function openClue(category: Category, clue: Clue): void {
   reviewMode.value = Boolean(status)
   showAnswer.value = reviewMode.value
   revealStage.value = reviewMode.value ? SPECIAL_REVEAL_COUNT : 1
-  specialGuess.value = ''
   specialFeedback.value = ''
   specialOutcome.value = null
 }
@@ -1031,7 +1041,6 @@ function closeClue(): void {
   showAnswer.value = false
   reviewMode.value = false
   revealStage.value = 1
-  specialGuess.value = ''
   specialFeedback.value = ''
   specialOutcome.value = null
 }
@@ -1063,9 +1072,6 @@ function onFrameViewerClose(): void {
   selectedFrameIndex.value = 0
 }
 
-function normalizeAnswer(value: string): string {
-  return value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '')
-}
 
 function finishSpecial(correct: boolean): void {
   const selected = selectedClue.value
@@ -1082,9 +1088,9 @@ function finishSpecial(correct: boolean): void {
   persistGame()
 }
 
-function judgeFrameAnswer(correct: boolean): void {
+function judgeSpecialAnswer(correct: boolean): void {
   const selected = selectedClue.value
-  if (!selected || selected.clue.mode !== 'frames' || specialOutcome.value || reviewMode.value || isPlayed(selected.category, selected.clue)) return
+  if (!selected || (selected.clue.mode !== 'frames' && selected.clue.mode !== 'zoom') || specialOutcome.value || reviewMode.value || isPlayed(selected.category, selected.clue)) return
 
   if (correct) {
     finishSpecial(true)
@@ -1093,38 +1099,15 @@ function judgeFrameAnswer(correct: boolean): void {
 
   if (revealStage.value < SPECIAL_REVEAL_COUNT) {
     revealStage.value += 1
-    specialFeedback.value = `Incorrect. Frame ${revealStage.value} revealed. Potential score: ${currentSpecialReward.value}.`
+    specialFeedback.value = selected.clue.mode === 'frames'
+      ? `Incorrect. Frame ${revealStage.value} revealed. Still worth ${currentSpecialReward.value} points.`
+      : `Incorrect. Reveal ${revealStage.value} shown. Still worth ${currentSpecialReward.value} points.`
     return
   }
 
   finishSpecial(false)
 }
 
-function submitSpecialGuess(): void {
-  const selected = selectedClue.value
-  if (!selected || selected.clue.mode !== 'zoom' || specialOutcome.value) return
-
-  const guess = normalizeAnswer(specialGuess.value)
-  if (!guess) {
-    specialFeedback.value = 'Enter a guess first.'
-    return
-  }
-
-  const acceptedAnswers = [selected.clue.answer, ...selected.clue.acceptedAnswers]
-  if (acceptedAnswers.some((answer) => normalizeAnswer(answer) === guess)) {
-    finishSpecial(true)
-    return
-  }
-
-  specialGuess.value = ''
-  if (revealStage.value < SPECIAL_REVEAL_COUNT) {
-    revealStage.value += 1
-    specialFeedback.value = `Not quite. The next reveal costs ${SPECIAL_REVEAL_PENALTY} points. Potential score: ${currentSpecialReward.value}.`
-    return
-  }
-
-  finishSpecial(false)
-}
 
 function scoreClue(correct: boolean): void {
   const selected = selectedClue.value
@@ -1206,21 +1189,15 @@ watch(selectedClue, (selected) => {
 
     <section id="top" class="hero" aria-labelledby="game-title">
       <div class="hero-copy">
-        <p class="eyebrow"><span class="eyebrow-line"></span> Gather your ghouls &amp; test your wits</p>
         <h1 id="game-title">Halloween <span>Jeopardy</span></h1>
-        <p class="hero-description">{{ categories.length }} categories. {{ totalClueCount }} clues. Get ready to rattle a few bones.</p>
       </div>
     </section>
 
     <section class="score-section" aria-labelledby="score-heading">
       <div class="section-heading">
         <div class="section-title-group">
-          <span class="section-number">01</span>
           <h2 id="score-heading">Choose your team</h2>
         </div>
-      </div>
-      <div class="score-toolbar">
-        <p class="turn-hint"><span class="turn-pip" aria-hidden="true"></span> Tap a team to set the active turn</p>
       </div>
       <div class="team-picker">
         <button
@@ -1246,12 +1223,9 @@ watch(selectedClue, (selected) => {
     <section class="board-section" aria-labelledby="board-heading">
       <div class="section-heading board-section-heading">
         <div class="section-title-group">
-          <span class="section-number">02</span>
           <h2 id="board-heading">Pick a clue</h2>
         </div>
-        <p class="clue-counter"><strong>{{ remainingClues }}</strong> clues left</p>
       </div>
-      <p class="board-instruction">It’s <strong>{{ currentTeam.name }}</strong>’s turn. Choose a point value to reveal a clue.</p>
 
       <div class="board-scroll" role="region" aria-label="Jeopardy game board" tabindex="0">
         <div
@@ -1281,11 +1255,9 @@ watch(selectedClue, (selected) => {
           </article>
         </div>
       </div>
-      <p class="scroll-hint">On a small screen? Swipe the board sideways <span aria-hidden="true">↔</span></p>
     </section>
 
     <footer class="footer-bar">
-      <div class="footer-note"><span aria-hidden="true">✦</span> Play fair. Keep it spooky.</div>
       <div class="footer-actions">
         <a class="admin-trigger" href="/admin" @click.prevent="openAdminPage">Admin <span aria-hidden="true">⚙</span></a>
         <button class="reset-button" type="button" @click="resetGame">Reset game <span aria-hidden="true">↺</span></button>
@@ -1355,9 +1327,7 @@ watch(selectedClue, (selected) => {
             <strong>{{ revealStage }}</strong> / {{ SPECIAL_REVEAL_COUNT }}
             <span class="special-stake">{{ currentSpecialReward }} points at stake</span>
           </p>
-          <p v-if="selectedClue.clue.mode === 'frames' && !specialOutcome && !reviewMode" class="special-rules">The host judges each answer. Every incorrect guess reveals the next frame and costs {{ SPECIAL_REVEAL_PENALTY }} points.</p>
-          <p v-else-if="selectedClue.clue.mode === 'zoom' && !specialOutcome && !reviewMode" class="special-rules">Every extra reveal costs {{ SPECIAL_REVEAL_PENALTY }} points.</p>
-          <p v-else-if="selectedClue.clue.mode === 'frames' && !reviewMode" class="special-rules">Scroll through all five frames below.</p>
+          <p v-if="!specialOutcome && !reviewMode" class="special-rules">The host judges each answer. Incorrect answers reveal {{ selectedClue.clue.mode === 'frames' ? 'the next frame' : 'more of the image' }}{{ revealPenalty > 0 ? ` and lower the potential score by ${revealPenalty} points.` : ' with no point penalty.' }}</p>
 
           <button
             v-if="selectedClue.clue.mode === 'frames' && !specialOutcome && !reviewMode"
@@ -1382,33 +1352,18 @@ watch(selectedClue, (selected) => {
             />
           </button>
 
-          <div v-if="selectedClue.clue.mode === 'frames' && !specialOutcome && !reviewMode" class="judging-panel">
+          <div v-if="!specialOutcome && !reviewMode" class="judging-panel">
             <p>Host: was <strong>{{ currentTeam.name }}</strong> correct?</p>
             <div class="judging-actions">
-              <button class="judge-button judge-correct" type="button" @click="judgeFrameAnswer(true)">
+              <button class="judge-button judge-correct" type="button" @click="judgeSpecialAnswer(true)">
                 <span aria-hidden="true">✓</span> Correct <b>+{{ currentSpecialReward }}</b>
               </button>
-              <button class="judge-button judge-missed" type="button" @click="judgeFrameAnswer(false)">
-                <span aria-hidden="true">×</span> Incorrect <b>{{ revealStage < SPECIAL_REVEAL_COUNT ? `Next frame · −${SPECIAL_REVEAL_PENALTY}` : 'End clue' }}</b>
+              <button class="judge-button judge-missed" type="button" @click="judgeSpecialAnswer(false)">
+                <span aria-hidden="true">×</span> Incorrect <b>{{ revealStage < SPECIAL_REVEAL_COUNT ? (selectedClue.clue.mode === 'frames' ? 'Next frame' : 'Next reveal') + (revealPenalty > 0 ? ` · −${revealPenalty}` : '') : 'End clue' }}</b>
               </button>
             </div>
           </div>
 
-          <form v-if="selectedClue.clue.mode === 'zoom' && !specialOutcome && !reviewMode" class="special-guess-form" @submit.prevent="submitSpecialGuess">
-            <label for="special-guess">Guess the costume or character</label>
-            <div class="special-guess-entry">
-              <input
-                id="special-guess"
-                v-model="specialGuess"
-                type="text"
-                maxlength="80"
-                autocomplete="off"
-                placeholder="Name the costume"
-                autofocus
-              />
-              <button class="special-submit-button" type="submit">Guess</button>
-            </div>
-          </form>
           <p v-if="specialFeedback && !reviewMode" class="special-feedback" role="status" aria-live="polite">{{ specialFeedback }}</p>
           <div v-if="specialOutcome && !reviewMode" class="special-result" :class="`special-result-${specialOutcome}`">
             <span>{{ specialOutcome === 'correct' ? 'MYSTERY SOLVED' : 'OUT OF REVEALS' }}</span>
@@ -1666,6 +1621,14 @@ watch(selectedClue, (selected) => {
             />
           </div>
           <p class="admin-note">Upload each picture or sound once to the server library, then reuse it in any clue. Config exports embed attached media.</p>
+          <div class="admin-config-reveal-penalty">
+            <label class="admin-field" for="config-reveal-penalty">
+              <span>Penalty per incorrect Frame/Zoom reveal (points)</span>
+              <input id="config-reveal-penalty" v-model="revealPenaltyInput" type="number" min="0" step="1" inputmode="numeric" @input="adminMessage = ''" />
+            </label>
+            <button class="admin-save-button" type="button" @click="saveRevealPenalty">Save penalty</button>
+            <p class="admin-note">Each incorrect answer reduces the potential award; it never deducts from a team’s current score. 0 means no penalty.</p>
+          </div>
 
           <div class="admin-config-editor">
             <div class="admin-editor-heading">
@@ -1755,10 +1718,6 @@ watch(selectedClue, (selected) => {
                   <label class="admin-field admin-clue-answer-field" for="config-clue-answer">
                     <span>Answer</span>
                     <textarea id="config-clue-answer" v-model="configClueAnswer" rows="2" maxlength="1000" @input="adminMessage = ''"></textarea>
-                  </label>
-                  <label v-if="configClueMode === 'zoom'" class="admin-field admin-clue-accepted-answers-field" for="config-clue-accepted-answers">
-                    <span>Accepted answers (one per line)</span>
-                    <textarea id="config-clue-accepted-answers" v-model="configAcceptedAnswers" rows="2" maxlength="2000" @input="adminMessage = ''"></textarea>
                   </label>
                   <div v-if="configClueMode === 'frames' && configSelectedClue?.mode === 'frames'" class="admin-media-editor admin-media-editor-frames">
                     <label v-for="(frame, index) in configSelectedClue.frames" :key="`frame-${index}`" class="admin-media-slot">

@@ -7,7 +7,7 @@ export type ClueBase = {
 export type Clue =
   | (ClueBase & { mode?: undefined })
   | (ClueBase & { mode: 'frames'; frames: string[] })
-  | (ClueBase & { mode: 'zoom'; acceptedAnswers: string[]; image: string })
+  | (ClueBase & { mode: 'zoom'; image: string })
   | (ClueBase & { mode: 'audio'; audio: string })
 
 export type Category = {
@@ -19,6 +19,7 @@ export type Category = {
 
 export type GameConfig = {
   version: 1
+  revealPenalty: number
   categories: Category[]
 }
 
@@ -115,11 +116,11 @@ const defaultCategories: Category[] = [
     name: 'Zoomed-In Costumes',
     icon: '🔎',
     clues: [
-      { mode: 'zoom', value: 100, prompt: 'Name this classic Halloween costume.', answer: 'Witch', acceptedAnswers: ['witch costume', 'witch outfit'], image: '/mini-games/costumes/witch.svg' },
-      { mode: 'zoom', value: 200, prompt: 'Name this classic Halloween costume.', answer: 'Vampire', acceptedAnswers: ['vampire costume', 'Dracula'], image: '/mini-games/costumes/vampire.svg' },
-      { mode: 'zoom', value: 300, prompt: 'Name this classic Halloween costume.', answer: 'Mummy', acceptedAnswers: ['mummy costume', 'wrapped mummy'], image: '/mini-games/costumes/mummy.svg' },
-      { mode: 'zoom', value: 400, prompt: 'Name this classic Halloween costume.', answer: 'Werewolf', acceptedAnswers: ['werewolf costume', 'wolfman', 'wolf man'], image: '/mini-games/costumes/werewolf.svg' },
-      { mode: 'zoom', value: 500, prompt: 'Name this classic Halloween costume.', answer: 'Skeleton', acceptedAnswers: ['skeleton costume', 'skull costume'], image: '/mini-games/costumes/skeleton.svg' },
+      { mode: 'zoom', value: 100, prompt: 'Name this classic Halloween costume.', answer: 'Witch', image: '/mini-games/costumes/witch.svg' },
+      { mode: 'zoom', value: 200, prompt: 'Name this classic Halloween costume.', answer: 'Vampire', image: '/mini-games/costumes/vampire.svg' },
+      { mode: 'zoom', value: 300, prompt: 'Name this classic Halloween costume.', answer: 'Mummy', image: '/mini-games/costumes/mummy.svg' },
+      { mode: 'zoom', value: 400, prompt: 'Name this classic Halloween costume.', answer: 'Werewolf', image: '/mini-games/costumes/werewolf.svg' },
+      { mode: 'zoom', value: 500, prompt: 'Name this classic Halloween costume.', answer: 'Skeleton', image: '/mini-games/costumes/skeleton.svg' },
     ],
   },
 ]
@@ -131,12 +132,6 @@ function requireText(value: unknown, field: string, maxLength: number): string {
   return value.trim()
 }
 
-function requireStringList(value: unknown, field: string, maxItemLength: number): string[] {
-  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string' && item.trim() && item.length <= maxItemLength)) {
-    throw new Error(`${field} must be a list of strings (each at most ${maxItemLength} characters).`)
-  }
-  return value.map((item) => item.trim())
-}
 
 const MAX_MEDIA_REFERENCE_LENGTH = 16_000_000
 
@@ -156,13 +151,13 @@ function requireMediaReferenceList(value: unknown, field: string): string[] {
 
 function copyClue(clue: Clue): Clue {
   if (clue.mode === 'frames') return { ...clue, frames: [...clue.frames] }
-  if (clue.mode === 'zoom') return { ...clue, acceptedAnswers: [...clue.acceptedAnswers] }
   return { ...clue }
 }
 
 export function createDefaultGameConfig(): GameConfig {
   return {
     version: 1,
+    revealPenalty: 0,
     categories: defaultCategories.map((category) => ({
       ...category,
       clues: category.clues.map(copyClue),
@@ -174,10 +169,14 @@ export function parseGameConfig(value: unknown): GameConfig {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error('This is not a supported game configuration. Expected version 1 with at least one category.')
   }
-  const root = value as { version?: unknown; categories?: unknown }
+  const root = value as { version?: unknown; revealPenalty?: unknown; categories?: unknown }
   const rawCategories = root.categories
   if (root.version !== 1 || !Array.isArray(rawCategories) || rawCategories.length === 0) {
     throw new Error('This is not a supported game configuration. Expected version 1 with at least one category.')
+  }
+  const revealPenalty = root.revealPenalty === undefined ? 0 : root.revealPenalty
+  if (typeof revealPenalty !== 'number' || !Number.isSafeInteger(revealPenalty) || revealPenalty < 0) {
+    throw new Error('Reveal penalty must be a non-negative whole number of points.')
   }
 
   const ids = new Set<string>()
@@ -209,7 +208,6 @@ export function parseGameConfig(value: unknown): GameConfig {
         prompt?: unknown
         answer?: unknown
         mode?: unknown
-        acceptedAnswers?: unknown
         frames?: unknown
         image?: unknown
         audio?: unknown
@@ -233,9 +231,8 @@ export function parseGameConfig(value: unknown): GameConfig {
         return { ...base, mode: 'frames', frames }
       }
       if (clueData.mode === 'zoom') {
-        const acceptedAnswers = requireStringList(clueData.acceptedAnswers, `${clueLabel} accepted answers`, 200)
         const image = requireMediaReference(clueData.image, `${clueLabel} image path`)
-        return { ...base, mode: 'zoom', acceptedAnswers, image }
+        return { ...base, mode: 'zoom', image }
       }
       if (clueData.mode === 'audio') {
         const audio = requireMediaReference(clueData.audio, `${clueLabel} audio path`)
@@ -247,5 +244,5 @@ export function parseGameConfig(value: unknown): GameConfig {
     return { id, name, icon, clues }
   })
 
-  return { version: 1, categories }
+  return { version: 1, revealPenalty, categories }
 }

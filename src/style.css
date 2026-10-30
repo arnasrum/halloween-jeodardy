@@ -121,14 +121,11 @@ a:focus-visible,
 .topbar,
 .wordmark,
 .game-status,
-.eyebrow,
 .section-heading,
 .section-title-group,
 .team-card,
 .team-details,
-.board-instruction,
 .footer-bar,
-.footer-note,
 .reset-button,
 .modal-category,
 .judging-actions {
@@ -206,8 +203,7 @@ a:focus-visible,
   text-align: right;
 }
 
-.status-dot,
-.turn-pip {
+.status-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -231,21 +227,6 @@ a:focus-visible,
   animation: rise-in 650ms both;
 }
 
-.eyebrow {
-  gap: 10px;
-  margin: 0 0 15px;
-  color: #c1b3d4;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-}
-
-.eyebrow-line {
-  width: 23px;
-  height: 1px;
-  background: var(--orange);
-}
 
 .hero h1 {
   max-width: 750px;
@@ -262,12 +243,6 @@ a:focus-visible,
   font-style: italic;
 }
 
-.hero-description {
-  margin: 20px 0 0;
-  color: var(--muted);
-  font-size: 14px;
-  letter-spacing: 0.01em;
-}
 
 
 .score-section,
@@ -284,12 +259,6 @@ a:focus-visible,
   gap: 12px;
 }
 
-.section-number {
-  color: var(--orange);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-}
 
 .section-heading h2 {
   margin: 0;
@@ -298,37 +267,8 @@ a:focus-visible,
   letter-spacing: -0.02em;
 }
 
-.turn-hint,
-.clue-counter {
-  margin: 0;
-  color: var(--muted);
-  font-size: 11px;
-}
 
-.turn-hint {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 
-.turn-pip {
-  width: 6px;
-  height: 6px;
-  background: var(--orange);
-  box-shadow: 0 0 9px rgba(255, 155, 84, 0.7);
-}
-
-.score-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: -5px 0 12px;
-}
-
-.score-toolbar .turn-hint {
-  margin: 0;
-}
 
 .add-team-trigger {
   display: inline-flex;
@@ -513,23 +453,7 @@ a:focus-visible,
   margin-bottom: 8px;
 }
 
-.clue-counter strong {
-  color: var(--orange);
-  font-size: 14px;
-  font-variant-numeric: tabular-nums;
-}
 
-.board-instruction {
-  gap: 4px;
-  margin: 0 0 15px 34px;
-  color: #aaa0bd;
-  font-size: 11px;
-}
-
-.board-instruction strong {
-  color: #f0e4fb;
-  font-weight: 650;
-}
 
 .board-scroll {
   overflow-x: auto;
@@ -650,26 +574,9 @@ a:focus-visible,
   transform: translateX(-50%);
 }
 
-.scroll-hint {
-  display: none;
-  margin: 6px 0 0;
-  color: #8f859f;
-  font-size: 10px;
-  text-align: center;
-}
-
-.scroll-hint span {
-  color: var(--orange);
-}
-
-@media (min-width: 741px) and (max-width: 1175px) {
-  .scroll-hint {
-    display: block;
-  }
-}
 
 .footer-bar {
-  justify-content: space-between;
+  justify-content: flex-end;
   margin-top: 27px;
   padding-top: 17px;
   border-top: 1px solid rgba(200, 180, 232, 0.11);
@@ -702,15 +609,6 @@ a:focus-visible,
   color: #f4eafb;
 }
 
-.footer-note {
-  gap: 9px;
-  color: #898098;
-  font-size: 10px;
-}
-
-.footer-note span {
-  color: var(--orange);
-}
 
 .reset-button {
   gap: 8px;
@@ -1158,6 +1056,28 @@ a:focus-visible,
 .admin-config-transfer .admin-secondary-button {
   flex: 1 1 180px;
 }
+.admin-config-reveal-penalty {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin: 12px 0 16px;
+  padding: 12px;
+  border: 1px solid rgba(200, 180, 232, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.admin-config-reveal-penalty .admin-field {
+  max-width: 280px;
+}
+
+.admin-config-reveal-penalty .admin-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  line-height: 1.5;
+}
+
 
 .admin-file-input {
   display: none;
@@ -1254,7 +1174,6 @@ a:focus-visible,
 
 .admin-config-clue-form .admin-clue-prompt-field,
 .admin-config-clue-form .admin-clue-answer-field,
-.admin-config-clue-form .admin-clue-accepted-answers-field,
 .admin-config-clue-form .admin-note,
 .admin-config-clue-form .admin-config-category-actions {
   grid-column: 1 / -1;
@@ -1603,48 +1522,7 @@ a:focus-visible,
   transition: transform 440ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.special-guess-form {
-  display: grid;
-  width: min(100%, 460px);
-  gap: 7px;
-  margin: 0 auto;
-  text-align: left;
-}
 
-.special-guess-form label {
-  color: #c4b7d6;
-  font-size: 10px;
-  font-weight: 650;
-}
-
-.special-guess-entry {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-}
-
-.special-guess-entry input {
-  width: 100%;
-  min-height: 42px;
-  padding: 0 11px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: #100b1d;
-  color: #f7f0ff;
-  font: inherit;
-  font-size: 12px;
-}
-
-.special-guess-entry input:focus-visible {
-  outline: 2px solid var(--orange);
-  outline-offset: 2px;
-}
-
-.special-guess-entry input::placeholder {
-  color: #756b86;
-}
-
-.special-submit-button,
 .special-close-button {
   min-height: 42px;
   padding: 0 14px;
@@ -1658,7 +1536,6 @@ a:focus-visible,
   transition: background 160ms ease, transform 160ms ease;
 }
 
-.special-submit-button:hover,
 .special-close-button:hover {
   background: rgba(255, 155, 84, 0.2);
   transform: translateY(-1px);
@@ -2065,10 +1942,6 @@ a:focus-visible,
     font-size: clamp(48px, 11vw, 71px);
   }
 
-  .hero-description {
-    max-width: 340px;
-    line-height: 1.5;
-  }
 
   .team-card {
     min-height: 74px;
@@ -2093,9 +1966,6 @@ a:focus-visible,
     grid-template-rows: 68px repeat(var(--clue-count, 5), minmax(70px, auto));
   }
 
-  .scroll-hint {
-    display: block;
-  }
 }
 
 @media (max-width: 480px) {
@@ -2122,31 +1992,17 @@ a:focus-visible,
     min-height: 220px;
   }
 
-  .eyebrow {
-    max-width: 270px;
-    font-size: 9px;
-    line-height: 1.5;
-  }
 
   .hero h1 {
     font-size: clamp(45px, 12vw, 59px);
   }
 
-  .hero-description {
-    max-width: 285px;
-    font-size: 12px;
-  }
 
 
   .section-heading h2 {
     font-size: 14px;
   }
 
-  .turn-hint {
-    max-width: 125px;
-    font-size: 9px;
-    line-height: 1.4;
-  }
 
   .team-picker {
     gap: 8px;
@@ -2203,14 +2059,7 @@ a:focus-visible,
     margin-top: 29px;
   }
 
-  .clue-counter {
-    font-size: 10px;
-  }
 
-  .board-instruction {
-    margin-left: 0;
-    font-size: 10px;
-  }
 
   .footer-actions {
     gap: 4px;
@@ -2232,11 +2081,22 @@ a:focus-visible,
   .admin-config-category-fields .admin-field:first-child,
   .admin-config-clue-form .admin-clue-prompt-field,
   .admin-config-clue-form .admin-clue-answer-field,
-  .admin-config-clue-form .admin-clue-accepted-answers-field,
   .admin-config-clue-form .admin-note,
   .admin-config-clue-form .admin-config-category-actions {
     grid-column: auto;
   }
+  .admin-config-reveal-penalty {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-config-reveal-penalty .admin-note {
+    grid-column: auto;
+  }
+
+  .admin-config-reveal-penalty .admin-save-button {
+    width: 100%;
+  }
+
 
   .admin-config-add-category-form {
     grid-template-columns: 1fr;
